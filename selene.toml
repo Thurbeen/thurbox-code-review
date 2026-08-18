@@ -1,0 +1,32 @@
+# Static analysis for this plugin, against the plugin VM's real standard library.
+#
+# `thurbox.yml` beside this file is a COPY of the one in the thurbox checkout,
+# which is the sandbox contract written down: the five stdlib tables the kernel
+# grants plus its injected globals, and nothing else. Reaching for `os` or `io`
+# in a pane is therefore a lint error here rather than an `attempt to index a
+# nil value` at the moment somebody opens it. Refresh it from the checkout when
+# the kernel publishes something new.
+#
+# `std` names `thurbox.yml`, which declares the plugin VM's real standard
+# library — the five stdlib tables the kernel grants plus its six injected
+# globals, with everything it withholds marked removed. So this checks two
+# things at once: that the Lua is sound, and that it stays inside the sandbox.
+std = "thurbox"
+
+# `tests/` is NOT plugin code. It runs under a real Lua outside the VM, so it
+# uses `os`, `io`, `debug` and `_G` on purpose — checking it against the sandbox
+# would be checking the wrong thing.
+exclude = ["tests/**"]
+
+[lints]
+# A plugin is one file returning one table; the kernel calls its fields. Nothing
+# else references them, which is not "unused".
+unused_variable = "warn"
+# Shadowing is how the bundled panes narrow a name deliberately
+# (`local session = item.session`), and every case is local to a few lines.
+shadowing = "allow"
+# The kernel interrupts a plugin that never returns, so an infinite loop is a
+# bounded failure rather than a hang — but it is still almost certainly a bug.
+almost_swapped = "deny"
+undefined_variable = "deny"
+unscoped_variables = "deny"
