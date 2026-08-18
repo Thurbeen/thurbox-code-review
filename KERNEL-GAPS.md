@@ -1,11 +1,13 @@
 # What this pane needs from the kernel and does not have
 
-Four things, in the order they matter. Each names its call site and the smallest
-change that would do it, so this is a patch someone could write rather than a
-wish. None of them is made here: a kernel change is not a plugin's to make
-unasked, and faking one in `state` would look like it worked.
+In the order **using** the pane made me want them, which is not the order a
+feature list would put them in — see the note on the target picker at the end.
+Each names its call site and the smallest change that would do it, so this is a
+patch someone could write rather than a wish. None of them is made here: a
+kernel change is not a plugin's to make unasked, and faking one in `state` would
+look like it worked.
 
-Written against the v2 plugin kernel at `5c7be55`.
+Written against the v2 plugin kernel at `feaca48`.
 
 ---
 
@@ -74,7 +76,39 @@ anywhere else. So `c` and `s` are declared, listed in `F1`, and say this.
 
 ---
 
-## 2. A plugin cannot put text on the clipboard
+## 2. The file list is silently truncated with the body
+
+`files` is derived from the **capped** body, so it lists only the files whose
+patch fit inside 4 MiB. On a 400-file test repository the pane shows **76 of 400
+files**, and totals of `+30610 -30800` where the real ones are ~160,000 each.
+`raw_bytes` lets the banner say "4.0 of 21.1 MB", which is about bytes; nothing
+says that 81% of the changed files are missing from the *navigation aid*. A
+reviewer scrolling the list has no way to know it ends early.
+
+The objection to a file count is that counting would mean parsing the whole diff,
+which is what the cap exists to avoid. That is true of the diff **text** and not
+of the file **list**: git hands over the whole list without the patch, cheaply.
+Measured on that 22 MB diff, best of three:
+
+    git diff (full)            84.8 ms    22,130,000 bytes
+    git diff --numstat -M      44.5 ms        12,000 bytes   400 files, exact counts
+    git diff --name-status -M   2.1 ms         9,600 bytes   400 files, M/A/D/R
+
+So: **derive `files` from `--numstat -M` + `--name-status -M`, and cap only
+`body`.** The list is then always complete and exact, the body stays bounded,
+`truncated` keeps meaning what it means, and a pane's header counts stop being a
+fraction of the truth. ~45 ms on a worker already spending 85, and 12 KB where
+the body is 4 MiB.
+
+It also removes something this pane currently relies on and would rather not:
+`files[n]` and the body parse's `files[n]` are the same file only because both
+come from one `parse_unified_diff` over the same bytes. Sourced separately they
+would not be — so the pane should key on **path**, which is what a comment anchor
+will have to do anyway.
+
+---
+
+## 3. A plugin cannot put text on the clipboard
 
 v1's `y` copied the review as markdown. `Command::Copy` takes `{ session }` and
 copies **that session's terminal**, so there is no spelling of "copy this text"
@@ -96,7 +130,19 @@ from Lua is missing.
 
 ---
 
-## 3. `thurbox.diffs` publishes one target per session
+## 4. Nothing says how old a diff is
+
+Real, and realer since `command("diff", …)` exists: after a refresh there is no
+way to tell that anything happened, because the diff usually comes back identical
+and the only signal is a `pending` flicker lasting ~0.2 s. A `computed_at_ms` on
+the entry would let the title say "computed 4m ago". `taken_at_ms` is
+snapshot-wide and answers a different question.
+
+A nicety, not a blocker.
+
+---
+
+## 5. `thurbox.diffs` publishes one target per session
 
 v1's `t` opened a picker: all branch changes (`base..HEAD`), working changes
 (uncommitted), or a single commit. Every git function it needs is still present
@@ -124,9 +170,16 @@ showing, and `list_commits_on` behind a `store.want_commits` for the picker.
 Note that this generalises `command("diff", { session })`, which exists now and
 means "recompute the current target".
 
+**Ranked last on purpose, and I had it higher.** It is on this list because v1
+had it, not because using the pane produced the want. Branch-against-base is what
+a review *is* and it is the default; working changes are already covered where
+they matter, since a session with no `base_branch` falls back to
+`diff_working_on`, which is the case v1 needed the picker for; and per-commit is
+something I would go to `git` for. It is also the largest of these to build.
+
 ---
 
-## 4. Small: the two v1 chords are still asserted unbound
+## 6. Small: the two v1 chords are still asserted unbound
 
 `tests/v2_keymap.rs` lists `ctrl+x` and `f7` in `CHORDS_AWAITING_THEIR_PANE` and
 asserts they resolve to nothing, "until that pane is back". This pane claims both.

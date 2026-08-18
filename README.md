@@ -128,10 +128,11 @@ Lua and there is no command to write one. So `c` and `s` are declared, appear in
 `state`, which survives a reload and **not** a restart; the footer calls them
 "seen" rather than "reviewed" for that reason.
 
-`KERNEL-GAPS.md` states the exact read and command that would close it, plus the
-two smaller gaps: no plugin can put text on the clipboard (v1's `y`), and
-`thurbox.diffs` publishes one diff per session with no way to ask for another
-target (v1's `t` — branch / working / per-commit).
+`KERNEL-GAPS.md` states the exact read and command that would close it, and four
+smaller gaps ranked by what using the pane actually made me want — including one
+worth knowing as a **reader**: the changed-files list is derived from the capped
+body, so on a diff past 4 MiB it lists only the files that fit. On a 400-file test
+repository that is 76 of 400, with nothing on screen to say so.
 
 ## Developing
 
@@ -142,6 +143,7 @@ selene .                      # the sandbox contract, statically
 stylua --check .
 thurbox-cli plugin check      # loads the interface the way thurbox does
 tests/run.sh                  # the pure modules, under a real Lua
+tests/run.sh --render         # the pane's own node tree
 tests/run.sh --measure        # the cost, in the kernel's own unit
 tests/render-proof.sh         # the pane actually painting, in a real thurbox
 ```
@@ -150,13 +152,26 @@ tests/render-proof.sh         # the pane actually painting, in a real thurbox
 the checkout's `target/debug`. Worth using: a checkout is a live working tree, and
 a rebuild during a run replaces the binary underneath it.
 
-`plugin check` never calls `render`, so it cannot tell a pane that draws from a
-pane that throws. `tests/render-proof.sh` is what does: it stands up a hermetic
-thurbox in a tmux pane with real sessions, real worktrees and a real base branch,
-drives it with keys, and captures the frames. Every bug in this pane's history
-was found there and not by `check` — the scrollbar's missing `▼`, a footer that
-advertised a bare `e` with no label, a files list that printed `src/` twice, and
-a search box that refreshed the diff when you typed the `r` in "greet".
+Three layers, because each catches what the one below cannot:
+
+- **`plugin check`** loads the interface but never calls `render`, so it cannot
+  tell a pane that draws from a pane that throws.
+- **`tests/run.sh --render`** calls `render` against a faked snapshot and asserts
+  on the node tree — including, mechanically, that every node kind is one of the
+  four. A screenshot shows *what* was painted; this shows *why*.
+- **`tests/render-proof.sh`** stands up a hermetic thurbox in a tmux pane with
+  real sessions, worktrees and base branches, drives it with keys, and captures
+  the frames.
+
+Between them they found every bug this pane has had: the scrollbar's missing `▼`,
+a footer that advertised a bare `e` with no label, a files list that printed
+`src/` twice, a search box that refreshed the diff when you typed the `r` in
+"greet", and file rows that went dead while a large diff was still parsing.
+
+The middle layer exists because a capture once *misled* me — a torn frame, top
+border from one paint and bottom from the one before, that looked like the pane
+choosing the wrong footer. Captures are evidence about pixels, not about
+decisions.
 
 Both scripts write only under `$XDG_CACHE_HOME` and a temp directory; nothing
 generated lands in this working copy, because a dirty tree is what makes
