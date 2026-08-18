@@ -27,8 +27,14 @@ rm -f "$OUT"/*.txt
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The binaries to drive. Defaults to the checkout's, but a checkout is a live
+# working tree: if somebody is building in it while this runs, the binary is
+# replaced or missing halfway through and the run fails for a reason that has
+# nothing to do with the pane. `THURBOX_BIN` points at a snapshot copy instead.
+BIN_DIR="${THURBOX_BIN:-$REPO_ROOT/target/debug}"
+
 command -v tmux >/dev/null || die "tmux not found"
-[ -x "$REPO_ROOT/target/debug/thurbox" ] || die "build the checkout first"
+[ -x "$BIN_DIR/thurbox" ] || die "no thurbox binary at $BIN_DIR — build the checkout first"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 if [ ! -d "$UI_DIR/thurbox-code-review" ]; then
   log "seeding a scratch interface at $UI_DIR"
@@ -98,7 +104,7 @@ printf 'to be deleted\n' > docs/old.md
 git add -A && git commit -qm "base"
 
 log "creating the session"
-"$REPO_ROOT/target/debug/thurbox-cli" session create \
+"$BIN_DIR/thurbox-cli" session create \
   --name review-demo --repo-path "$WORK" \
   --worktree-branch feat/demo --base-branch main --agent sh --json > "$OUT/session.json"
 WORKTREE="$(python3 -c "import json,sys;d=json.load(open('$OUT/session.json'));print(d.get('cwd') or d.get('session',{}).get('cwd',''))")"
@@ -131,10 +137,20 @@ git add -A && git commit -qm "the changes under review"
 
 log "launching the TUI (${COLS}x${ROWS})"
 tmux -L "$SOCKET" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
-  "$REPO_ROOT/target/debug/thurbox"
+  "$BIN_DIR/thurbox"
 
 capture() { tmux -L "$SOCKET" capture-pane -p -t "$SESSION"; }
 send() { tmux -L "$SOCKET" send-keys -t "$SESSION" "$@"; }
+
+# Selected BY ID, not by counting Ctrl+J. The list groups by repository, so the
+# order a new session lands in is not the order it was created in — counting
+# keystrokes selected the wrong session and made a 22 MB diff read as "No
+# changes", which looked like a bug in the pane and was a bug in the test.
+select_session() {
+  "$BIN_DIR/thurbox-cli" session focus "$1" >/dev/null
+  sleep 1.0
+}
+
 
 wait_for() {
   local needle="$1" tries="${2:-80}"
@@ -177,7 +193,38 @@ fi
 wait_for "review-demo"
 shot 00-start
 
-# F7 — v1's chord, and the one that reaches a pane from a focused terminal.
+# ── the focus round trip ────────────────────────────────────────────────────
+#
+# One key in, the same key out. The kernel remembers where focus came from and
+# `toggle` reads that memory, so this pane names no pane to go back to. Asserted
+# rather than eyeballed: it is the property that decides whether a user can
+# leave a pane that occupies a switch slot.
+focused() { tail -1 "$(capture > "$OUT/.focus.txt"; echo "$OUT/.focus.txt")" | sed -n 's/^ *\([A-Za-z]*\) .*/\1/p'; }
+expect_focus() {
+  sleep 0.7
+  local who; who="$(focused)"
+  if [ "$who" = "$1" ]; then
+    log "  focus is $who — $2"
+  else
+    capture > "$OUT/focus-fail-$2.txt"
+    die "expected focus $1, got '$who' after: $2"
+  fi
+}
+
+log "focus round trip (from a cold launch, agent focused)"
+expect_focus Agent "cold launch"
+send F7;     expect_focus Review "F7 in"
+send F7;     expect_focus Agent  "F7 out"
+send F7;     expect_focus Review "F7 in again"
+send Escape; expect_focus Agent  "Esc out"
+
+# And from inside a FOCUSED TERMINAL, which is the case the F-key exists for:
+# a bare Ctrl+<letter> is left to the program, so Ctrl+X would not arrive.
+send F7;     expect_focus Review "F7 in from the agent"
+send Escape; expect_focus Agent  "Esc back to the terminal"
+send F7;     expect_focus Review "F7 in, once more"
+send F7;     expect_focus Agent  "F7 out, once more"
+
 send F7
 shot 01-review
 
@@ -253,14 +300,18 @@ catch_small
 
 # `ready` with nothing in it: a second session whose branch is its base.
 log "a session with no changes"
-"$REPO_ROOT/target/debug/thurbox-cli" session create \
+"$BIN_DIR/thurbox-cli" session create \
   --name no-changes --repo-path "$WORK" \
   --worktree-branch feat/empty --base-branch main --agent sh --json > "$OUT/empty.json"
 sleep 1.5
-send C-j            # next session in the list
+EMPTYID="$(python3 -c "import json;d=json.load(open('$OUT/empty.json'));print(d.get('id') or d.get('session',{}).get('id',''))")"
+SMALLID="$(python3 -c "import json;d=json.load(open('$OUT/session.json'));print(d.get('id') or d.get('session',{}).get('id',''))")"
+select_session "$EMPTYID"
+send F7
 shot 21-no-changes 1.5
 
-send C-k
+select_session "$SMALLID"
+send F7
 shot 22-back
 
 # Narrow: the files column is dropped, and the pane decides that from the width
@@ -298,7 +349,7 @@ for f in range(400):
 PYGEN
 git add -A && git commit -qm "base"
 
-"$REPO_ROOT/target/debug/thurbox-cli" session create \
+"$BIN_DIR/thurbox-cli" session create \
   --name big-diff --repo-path "$BIG" \
   --worktree-branch feat/big --base-branch main --agent sh --json > "$OUT/big.json"
 BIGTREE="$(python3 -c "import json;d=json.load(open('$OUT/big.json'));print(d.get('cwd') or d.get('session',{}).get('cwd',''))")"
@@ -315,7 +366,7 @@ PYGEN
 git add -A && git commit -qm "rewrite everything"
 log "big diff: $(git diff --no-color main..HEAD | wc -c) bytes"
 
-# Select it, and race the worker for the states it passes through on the way.
+# Race the worker for the states it passes through on the way.
 #
 # Held in a variable and written only on a match: writing every candidate frame
 # to disk made each poll slow enough that the worker finished between two of
@@ -335,7 +386,12 @@ catch() {
   return 1
 }
 
-send C-j; send C-j
+BIGID="$(python3 -c "import json;d=json.load(open('$OUT/big.json'));print(d.get('id') or d.get('session',{}).get('id',''))")"
+select_session "$BIGID"
+# `session focus` switches the active terminal, which brings the agent pane
+# forward — so the review pane has to be asked for again before it can be
+# watched.
+send F7
 catch 30-big-pending "Building diff|Asking for the diff" || true
 catch 31-big-reading "reading [0-9]+%" || true
 

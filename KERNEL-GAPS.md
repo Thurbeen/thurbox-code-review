@@ -157,3 +157,21 @@ a *confident wrong answer* rather than a missing feature:
 - **a diff was computed once per session per process.** `DiffStore::invalidate`
   had no caller anywhere in `src`. `command("diff", { session })` now invalidates
   and the next frame recomputes, which is what `r` in this pane does.
+
+Three more, asked for after building against the published shape and fixed in
+`cf06886` and `feaca48`:
+
+- **`files` dropped `status` and `old_path`**, which `summarise` already had in
+  hand from the parse. The pane re-read the whole body to recover a glyph and a
+  rename arrow. Both are published now, and the changed-files list is built from
+  the kernel's list rather than from this pane's incremental one — so it is
+  complete on the frame the diff arrives, while the body is still being read.
+- **`truncated` was a bare bool.** `raw_bytes` — the size before the cut — is
+  published now, so the banner says "showing 4.0 MB of 21.1 MB" instead of "some
+  changes are not shown". The file *count* is deliberately not offered: counting
+  them would mean parsing the whole diff, which is what the cap exists to avoid.
+- **a pane in a switch slot could be entered and not left.** `command("focus",
+  { toggle = true })` returns to wherever focus came from, using the same memory
+  `Esc` reads. This pane had shipped the `Esc`-to-a-named-sibling version, which
+  looks equivalent and is not: the only name it could hard-code is whoever shares
+  its slot in the *default* arrangement, and the arrangement is the user's file.

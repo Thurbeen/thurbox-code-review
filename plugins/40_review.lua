@@ -51,11 +51,6 @@ local export = require("thurbox-code-review.lib.export")
 --- name a settings lookup filters on.
 local NAME = "review"
 
---- The pane the `esc` key hands focus back to. Named rather than derived
---- because "where you came from" is not a thing a plugin can read, and the
---- centre slot's other occupant is what the user was looking at.
-local BACK_TO = "agent"
-
 --- Columns the changed-files list asks for, and the width below which the pane
 --- stops offering it at all. Below `FILES_MIN_PANE` there is not room for a diff
 --- and a list of what is in it, and the diff is the thing you came for.
@@ -471,9 +466,23 @@ local function file_tree(files)
   return out
 end
 
-local function files_pane(parse, opts)
+--- The changed-files list.
+---
+--- Built from the KERNEL's `files`, not from the incremental parse's. Two
+--- reasons, and the first is user-visible: the kernel's list is complete on the
+--- frame the diff arrives, so on a large diff the list is whole while the body
+--- is still being read — which is the half you navigate by. The second is that
+--- `status` and `old_path` are published there now, so nothing has to be
+--- recovered from the body to draw a glyph and a rename arrow.
+---
+--- Both lists come from one `parse_unified_diff` over the same bytes, so index
+--- `n` means the same file in each. That is load-bearing — a leaf carries the
+--- index the BODY rows use — so it is asserted rather than assumed: a leaf whose
+--- index the parse has not reached yet simply cannot be jumped to, and says so
+--- by not being a click target.
+local function files_pane(files, parse, opts)
   local width, height = opts.width, opts.height
-  local tree = file_tree(parse.files)
+  local tree = file_tree(files)
   local here = nil
   for at, entry in ipairs(tree) do
     if entry.index == opts.current then
@@ -501,6 +510,10 @@ local function files_pane(parse, opts)
     else
       local file = entry.file
       local current = entry.index == opts.current
+      -- Reachable once the body parse has produced the file's rows. Until then
+      -- the row draws normally and is not a click target, because there is no
+      -- row to jump to yet.
+      local reached = parse.files[entry.index] ~= nil
       local mark = opts.reviewed[file.path] and "✓" or " "
       local counts = " +" .. file.added .. " -" .. file.removed
       local indent = string.rep(" ", entry.depth)
@@ -534,8 +547,8 @@ local function files_pane(parse, opts)
         type = "text",
         len = 1,
         -- Identity: what makes this a tree rather than more cells.
-        id = "file:" .. entry.index,
-        role = "row",
+        id = reached and ("file:" .. entry.index) or nil,
+        role = reached and "row" or nil,
         text = { line },
       }
     end
@@ -574,6 +587,25 @@ local function find_bar(id, width, hits, at)
       },
     },
   }
+end
+
+--- What the cap left out, as specifically as the kernel lets it be said.
+---
+--- `raw_bytes` is the diff's size before the cut, which is what turns "some
+--- changes are not shown" into a number a reader can judge. The kernel
+--- deliberately does not offer a FILE count, because counting them would mean
+--- parsing the whole diff — which is the thing the cap exists to avoid — so the
+--- notice talks in megabytes and not in files.
+local function truncation_notice(entry)
+  local shown = 4 * 1024 * 1024
+  local whole = entry.raw_bytes
+  if type(whole) ~= "number" or whole <= shown then
+    return "diff truncated at 4 MiB — some changes are not shown"
+  end
+  return string.format(
+    "diff truncated: showing 4.0 MB of %.1f MB — the rest is not here",
+    whole / (1024 * 1024)
+  )
 end
 
 -- ── the footer hint strip ───────────────────────────────────────────────────
@@ -742,7 +774,7 @@ return {
     -- than one that is spelled differently here.
     { key = "r", action = "review.refresh", desc = "recompute the diff" },
     { key = "e", action = "review.send", desc = "send this review to the agent" },
-    { key = "esc", action = "review.close", desc = "back to the agent" },
+    { key = "esc", action = "review.close", desc = "close the search, or go back" },
     -- Declared, and honest about being unbuilt: a key in `F1` that says what is
     -- missing is more use than a key that is absent for a reason nobody can see.
     { key = "c", action = "review.comment", desc = "comment (needs a kernel change)" },
@@ -836,7 +868,11 @@ return {
 
     -- State four: ready, and empty. A static line naming the range it looked at,
     -- so it can never be mistaken for the animated one above.
-    if #parse.files == 0 and parse.done then
+    --
+    -- Asked of the KERNEL's file list rather than the parse's, so it is answered
+    -- on the frame the diff arrives. Waiting for the parse would have shown "No
+    -- changes" for a moment on a diff that has plenty.
+    if #(entry.files or {}) == 0 then
       return frame({
         right = range_runs,
         body = centred({
@@ -854,8 +890,12 @@ return {
     end
 
     -- State five: a diff. Everything below is the pane proper.
+    --
+    -- Totalled from the kernel's list too: summing the parse's would have the
+    -- header counting up while the body was read, which reads as the diff
+    -- growing rather than as the pane catching up.
     local added, removed = 0, 0
-    for _, file in ipairs(parse.files) do
+    for _, file in ipairs(entry.files or {}) do
       added = added + file.added
       removed = removed + file.removed
     end
@@ -870,7 +910,8 @@ return {
     local at = math.min(cursor_of(id), math.max(1, #parse.rows))
     local current_file = diff.file_of(parse.rows, at)
 
-    local show_files = files_shown() and inner_w >= FILES_MIN_PANE and #parse.files > 0
+    local published_files = entry.files or {}
+    local show_files = files_shown() and inner_w >= FILES_MIN_PANE and #published_files > 0
     local files_w = 0
     if show_files then
       files_w = math.max(FILES_WIDTH_MIN, math.min(FILES_WIDTH_MAX, math.floor(inner_w * 0.3)))
@@ -916,7 +957,7 @@ return {
       table.insert(
         content,
         1,
-        files_pane(parse, {
+        files_pane(entry.files or {}, parse, {
           width = files_w,
           height = body_h,
           current = current_file,
@@ -933,7 +974,7 @@ return {
         text = {
           {
             {
-              text = rows.pad(" diff truncated at 4 MiB — some changes are not shown ", inner_w),
+              text = rows.pad(" " .. truncation_notice(entry) .. " ", inner_w),
               style = { fg = theme.role("inverted_fg"), bg = theme.bad, bold = true },
             },
           },
@@ -1029,7 +1070,16 @@ return {
 
   on_action = function(action)
     if action == "review.open" then
-      command("focus", { text = NAME })
+      -- One key in, the same key out. `toggle` is the kernel's, because the
+      -- kernel is what remembers where focus came from (`focus_return`, the
+      -- memory `Esc` reads). This pane cannot: `ctx.focused` is a render value
+      -- and a render's values are gone by the time a key arrives.
+      --
+      -- It is also why the obvious hand-rolled version is wrong. "If I am
+      -- focused, focus `agent`" needs a name, and the only name available is
+      -- whoever shares this slot in the DEFAULT arrangement — which is the
+      -- user's file, not this plugin's assumption.
+      command("focus", { text = NAME, toggle = true })
       return true
     end
 
@@ -1066,8 +1116,11 @@ return {
         close_find(id)
         return true
       end
-      command("focus", { text = BACK_TO })
-      return true
+      -- Declined, on purpose. An `Esc` no pane claims is the kernel's, and it
+      -- returns focus to wherever it came from — by the same memory `toggle`
+      -- uses. Handling it here would mean naming a pane to go back to; handing
+      -- it back means the answer is right whatever the arrangement is.
+      return false
     end
     if action == "review.refresh" then
       -- Drops the kernel's cached answer; the loop re-requests on the next
@@ -1180,7 +1233,9 @@ return {
         text = "Please address the following code review:\n\n"
           .. export.markdown(session, parse, at, marks_of(id)),
       })
-      command("focus", { text = BACK_TO })
+      -- Back where you came from to watch the agent read it — by the same
+      -- toggle, so this names no pane either.
+      command("focus", { text = NAME, toggle = true })
     else
       return false
     end

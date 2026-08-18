@@ -30,19 +30,26 @@ thurbox-cli plugin install git+https://github.com/<you>/thurbox-code-review
 agent's terminal and declares a pill, so the action band offers it the moment it
 is installed. Press `Ctrl+X` or `F7` — v1's chords, unbound in v2 until now.
 
+The same key takes you back out, and so does `Esc`. Neither names a pane to
+return to: `command("focus", { toggle = true })` reads the kernel's own memory of
+where focus came from, and an `Esc` this pane does not claim is answered by the
+kernel the same way. Which pane you return to is your arrangement's business, not
+this plugin's.
+
 It asks for **no capabilities**. There is no `run`, no `program`, no filesystem:
 everything it draws comes from `thurbox.diffs`, which the kernel computes on a
 worker. Nothing to trust, nothing to grant.
 
-It needs a kernel with `store.selected`-driven diffs, `base_branch` on the
-session row, and `command("diff", …)` — all three landed in the v2 plugin kernel
-on 2026-08-18.
+It needs a v2 plugin kernel from 2026-08-18 or later: `store.selected`-driven
+diffs and `base_branch` on the session row (`5c7be55`), `status` / `old_path` /
+`raw_bytes` on a published diff (`cf06886`), and `command("focus", { toggle })`
+(`feaca48`).
 
 ## Keys
 
 | | |
 |---|---|
-| `Ctrl+X` / `F7` | open the review (global; `Ctrl+X` passes through to a focused agent) |
+| `Ctrl+X` / `F7` | open the review — and, pressed again, leave it (global; `Ctrl+X` passes through to a focused agent, which is why the F-key exists) |
 | `j` `k` `↑` `↓` | move by one logical row |
 | `PgUp` `PgDn` `g` `G` | page, top, bottom |
 | `⇥` `⇧⇥` | next / previous file |
@@ -55,7 +62,7 @@ on 2026-08-18.
 | `m` | mark the current file seen (**transient** — see below) |
 | `r` | recompute the diff |
 | `e` | send this review to the session's agent |
-| `Esc` | close the find bar, or go back to the agent |
+| `Esc` | close the find bar, or go back where you came from |
 | `c` `s` | comment / summarise — **declared, and not built**; see `KERNEL-GAPS.md` |
 
 `r` is refresh rather than v1's mark-reviewed, because `r` is refresh in every
@@ -106,7 +113,7 @@ must be distinguishable:
 | `pending` | `⠦ Building diff…` + the range, animated |
 | `failed` | the kernel's own reason, in the `danger` role |
 | `ready`, no files | a **static** `No changes` + the range that was diffed |
-| `truncated` | a banner that stays up whatever else is shown |
+| `truncated` | a banner naming what is missing — "showing 4.0 MB of 21.1 MB" |
 
 The first two move and the fourth does not, which is what the eye actually
 reads. A slow diff must never look like a clean worktree.
@@ -129,12 +136,19 @@ target (v1's `t` — branch / working / per-commit).
 ## Developing
 
 ```bash
-selene .                 # the sandbox contract, statically
+export THURBOX_REPO=/path/to/a/thurbox/checkout   # both test scripts need one
+
+selene .                      # the sandbox contract, statically
 stylua --check .
-thurbox-cli plugin check # loads the interface the way thurbox does
-tests/run.sh             # the pure modules, under a real Lua
-tests/render-proof.sh    # the pane actually painting, in a real thurbox
+thurbox-cli plugin check      # loads the interface the way thurbox does
+tests/run.sh                  # the pure modules, under a real Lua
+tests/run.sh --measure        # the cost, in the kernel's own unit
+tests/render-proof.sh         # the pane actually painting, in a real thurbox
 ```
+
+`THURBOX_BIN` points `render-proof.sh` at a *snapshot* of the binaries instead of
+the checkout's `target/debug`. Worth using: a checkout is a live working tree, and
+a rebuild during a run replaces the binary underneath it.
 
 `plugin check` never calls `render`, so it cannot tell a pane that draws from a
 pane that throws. `tests/render-proof.sh` is what does: it stands up a hermetic
