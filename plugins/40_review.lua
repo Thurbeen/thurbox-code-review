@@ -189,6 +189,45 @@ local function toggle_mark(id, path)
   state["marks:" .. id] = held
 end
 
+--- Files whose fold state is flipped from what their mark implies.
+---
+--- v1's `fold_override`, and v1's rule: a file is folded when
+--- `reviewed XOR override`. Marking a file seen folds it, because the point of
+--- marking it is that you are done with it — and the override lets you peek into
+--- a file you have marked, or fold one you have not, without either changing the
+--- mark. Two ideas, two sets, one XOR.
+local function folds_of(id)
+  return state["fold:" .. id] or {}
+end
+
+local function toggle_fold(id, path)
+  local held = folds_of(id)
+  held[path] = (not held[path]) or nil
+  state["fold:" .. id] = held
+end
+
+--- Is this file collapsed to its header?
+local function folded(marks, overrides, path)
+  return (marks[path] == true) ~= (overrides[path] == true)
+end
+
+--- What the fold set and the layout amount to, for the row cache.
+---
+--- A string rather than a table so a comparison is one operation. Built from the
+--- two sets rather than from the resulting fold state, because that is what
+--- changes when a key is pressed.
+local function fold_signature(marks, overrides, side)
+  local parts = { side and "side" or "unified" }
+  for path in pairs(marks) do
+    parts[#parts + 1] = "m" .. path
+  end
+  for path in pairs(overrides) do
+    parts[#parts + 1] = "o" .. path
+  end
+  table.sort(parts)
+  return table.concat(parts, "\1")
+end
+
 -- ── the view toggles ────────────────────────────────────────────────────────
 --
 -- ONE source of truth: the declared setting, read from the registry and written
@@ -247,11 +286,20 @@ end
 
 --- The rows in force: two flat lists over one parse, and which one is on screen
 --- decides what a selectable unit IS. See `lib/diff.lua`'s pairing section.
-local function rows_in_force(parse)
-  if side_by_side() then
-    return diff.paired(parse)
+local function rows_in_force(parse, id)
+  local base = side_by_side() and diff.paired(parse) or parse.rows
+  if not id then
+    return base
   end
-  return parse.rows
+  local marks, overrides = marks_of(id), folds_of(id)
+  if next(marks) == nil and next(overrides) == nil then
+    -- Nothing folded: hand back the base list rather than a copy of it. This is
+    -- the usual case and it should cost nothing.
+    return base
+  end
+  return diff.unfolded(parse, base, function(path)
+    return folded(marks, overrides, path)
+  end, fold_signature(marks, overrides, side_by_side()) .. ":" .. parse.at)
 end
 
 -- ── find-in-diff ────────────────────────────────────────────────────────────
@@ -769,6 +817,7 @@ local function footer(width, ready)
     put("file", "⇥")
     put("hunk", "[ ]")
     put("find", "/")
+    put("fold", "↵")
     put("split", "v")
     put("seen", "m")
     put("refresh", "r")
@@ -949,7 +998,14 @@ return {
     { key = "w", action = "review.wrap", desc = "soft-wrap long lines" },
     { key = "f", action = "review.files", desc = "show the changed-files list" },
     { key = "/", action = "review.find", desc = "find in the diff" },
-    { key = "enter", action = "review.find_commit", desc = "keep the search, stop typing" },
+    -- One key, two meanings, and they never overlap: while the query has the
+    -- keyboard `enter` commits it, and otherwise it folds the file you are on.
+    -- v1 spells the second `cr_toggle_fold` and reaches it from `enter` too.
+    {
+      key = "enter",
+      action = "review.find_commit",
+      desc = "keep the search, or fold this file",
+    },
     { key = "n", action = "review.find_next", desc = "next match" },
     { key = "N", action = "review.find_previous", desc = "previous match" },
     { key = "m", action = "review.mark", desc = "mark this file seen" },
@@ -1052,7 +1108,7 @@ return {
     -- the side-by-side layout — and which one is in force decides what a
     -- selectable unit IS, so everything downstream takes this and not
     -- `parse.rows`.
-    local in_force = rows_in_force(parse)
+    local in_force = rows_in_force(parse, id)
     settle_jump(id, parse, in_force, function(row)
       move_to(id, in_force, row)
     end)
@@ -1101,6 +1157,14 @@ return {
 
     local at = math.min(cursor_of(id), math.max(1, #in_force))
     local covered = diff.covered(parse)
+    -- Which files are collapsed, as a set, for the header chevrons.
+    local overrides = folds_of(id)
+    local fold_state = {}
+    for _, file in ipairs(entry.files or {}) do
+      if folded(reviewed, overrides, file.path) then
+        fold_state[file.path] = true
+      end
+    end
     -- The list points wherever it was driven, and otherwise at whatever the body
     -- is showing.
     local current_path = list_at(id) or diff.path_of(parse, in_force, at)
@@ -1126,6 +1190,7 @@ return {
       hscroll = (wrap or side_by_side()) and 0 or hscroll_of(id),
       query = query(id) and string.lower(query(id)) or nil,
       reviewed = reviewed,
+      folded = fold_state,
       canonical = parse.rows,
       -- A row's language, by the file it belongs to. A function rather than a
       -- table because the window only ever asks about the rows it draws — a
@@ -1273,7 +1338,7 @@ return {
         return false
       end
       local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
-      move_to(session.id, rows_in_force(parse), row)
+      move_to(session.id, rows_in_force(parse, session.id), row)
       return true
     end
 
@@ -1290,7 +1355,7 @@ return {
       return false
     end
     local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
-    local in_force = rows_in_force(parse)
+    local in_force = rows_in_force(parse, session.id)
     local row = diff.file_row(in_force, path)
     if row then
       move_to(session.id, in_force, row)
@@ -1378,7 +1443,7 @@ return {
       return true
     end
     local parse = diff.parse(id, entry.body or {}, epochs[id] or 0)
-    local in_force = rows_in_force(parse)
+    local in_force = rows_in_force(parse, id)
     local at = math.min(cursor_of(id), math.max(1, #in_force))
 
     if action == "review.next" then
@@ -1459,7 +1524,19 @@ return {
       -- back in it rather than making you type it again.
       state["find:" .. id], state["typing:" .. id] = true, true
     elseif action == "review.find_commit" then
-      return false
+      -- Not searching, so this is the fold. The cursor is put on the file's
+      -- header first: it is the one row a fold keeps, so the cursor cannot be
+      -- left pointing into rows that are about to disappear.
+      local path = list_at(id) or diff.path_of(parse, in_force, at)
+      if not path then
+        return true
+      end
+      local header = diff.file_row(in_force, path)
+      if header then
+        move_to(id, in_force, header)
+      end
+      toggle_fold(id, path)
+      set_top(id, 1)
     elseif action == "review.find_next" or action == "review.find_previous" then
       local hits = matches(id, parse, in_force, query(id))
       if #hits == 0 then

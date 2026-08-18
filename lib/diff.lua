@@ -498,6 +498,42 @@ function M.remap(parse, from_rows, at, to_rows)
   return math.max(1, math.min(at, #to_rows))
 end
 
+-- ── folding ─────────────────────────────────────────────────────────────────
+--
+-- A folded file contributes only its header row, like a collapsed tree node.
+-- v1's `rebuild_rows` does the same thing, and its rule for WHICH files are
+-- folded is worth keeping exactly: `reviewed XOR override`. Marking a file seen
+-- folds it, because the point of marking it is that you are done with it; the
+-- override then lets you peek into a file you have marked, or fold one you have
+-- not, without either action changing the mark.
+--
+-- Filtering happens over whichever list is in force, so it composes with the
+-- side-by-side view rather than being a third one.
+
+--- `base` with the rows of folded files removed, keeping their headers.
+---
+--- Cached on the parse against `signature`, which the caller builds from the set
+--- of folded paths and the layout. Without that this is a fresh table of up to a
+--- hundred thousand entries per frame, for a set that changes when a key is
+--- pressed and not otherwise.
+function M.unfolded(parse, base, is_folded, signature)
+  if parse.fold_key == signature and parse.folded_rows then
+    return parse.folded_rows
+  end
+  local out, hidden = {}, nil
+  for at = 1, #base do
+    local row = base[at]
+    if row.kind == "file" then
+      hidden = is_folded(row.path) and row.file or nil
+      out[#out + 1] = row
+    elseif row.file ~= hidden then
+      out[#out + 1] = row
+    end
+  end
+  parse.folded_rows, parse.fold_key = out, signature
+  return out
+end
+
 -- ── navigation over the flat list ───────────────────────────────────────────
 --
 -- Every one of these is an index into `rows`. Nothing here knows that a row can

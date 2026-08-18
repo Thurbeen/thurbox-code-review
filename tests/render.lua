@@ -226,6 +226,24 @@ local function surface_cells(node)
   return found
 end
 
+--- The body's lines as strings.
+---
+--- `texts` cannot see them: it walks `text` NODES, and the body is a surface
+--- whose cells never become nodes. Anything asserting about what the diff shows
+--- has to come through here — which is the tree/surface split showing up in the
+--- tests exactly as it does in the pane.
+local function body_texts(node)
+  local out = {}
+  for _, line in ipairs(surface_cells(node) or {}) do
+    local parts = {}
+    for _, run in ipairs(line) do
+      parts[#parts + 1] = run.text or ""
+    end
+    out[#out + 1] = table.concat(parts)
+  end
+  return out
+end
+
 --- The body line the cursor is on, found by its selection background.
 ---
 --- The right oracle for "did the jump land": asking whether a file is the LAST
@@ -653,6 +671,85 @@ do
     "a click below the content is declined",
     plugin.on_click({ id = "body", x = 0, y = 9999 }) == false
   )
+
+  diff.forget("s1")
+end
+
+print("== folding ==")
+do
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+  snapshot(ready(3, 5))
+  render()
+  plugin.on_action("review.top")
+
+  local function body_lines()
+    return #(surface_cells(render()) or {})
+  end
+  --- The BODY's header row for a file, told apart from the file list's row for
+  --- the same path by the fold chevron only the body draws.
+  ---
+  --- Plain finds, not `[▸▾]`: a Lua character class is a set of BYTES, so a
+  --- class of multi-byte characters matches their bytes individually and means
+  --- nothing. It silently matched no header at all, and the failures read as
+  --- folding being broken while every count around them said it worked.
+  local function header_of(path)
+    for _, line in ipairs(body_texts(render())) do
+      local chevron = line:find("▸", 1, true) or line:find("▾", 1, true)
+      if chevron and line:find(path, 1, true) then
+        return line
+      end
+    end
+    return nil
+  end
+
+  local whole = body_lines()
+  check("the body has rows", whole > 6)
+  check(
+    "an unfolded file shows ▾",
+    (header_of("pkg/file1.txt") or ""):find("▾", 1, true) ~= nil
+  )
+
+  -- `enter` folds the file the cursor is on.
+  check("enter folds", plugin.on_action("review.find_commit"))
+  local after = body_lines()
+  check("the body is shorter", after < whole, after .. " vs " .. whole)
+  check("and the header says so", (header_of("pkg/file1.txt") or ""):find("▸", 1, true) ~= nil)
+  check("the file is still listed", joined(render()):find("file1.txt", 1, true) ~= nil)
+
+  check("enter unfolds", plugin.on_action("review.find_commit"))
+  eq("back to the whole body", body_lines(), whole)
+
+  -- v1's rule: `reviewed XOR override`. Marking folds; the override then lets
+  -- you peek into a marked file WITHOUT unmarking it, which is the whole reason
+  -- two sets exist instead of one.
+  check("marking it", plugin.on_action("review.mark"))
+  local marked = header_of("pkg/file1.txt") or ""
+  check("shows the tick", marked:find("✓", 1, true) ~= nil)
+  check("and folds it", marked:find("▸", 1, true) ~= nil)
+  check("shortening the body", body_lines() < whole)
+
+  check("peeking into it", plugin.on_action("review.find_commit"))
+  local peeked = header_of("pkg/file1.txt") or ""
+  check("keeps the tick", peeked:find("✓", 1, true) ~= nil, peeked)
+  check("while unfolding", peeked:find("▾", 1, true) ~= nil, peeked)
+  eq("with the whole body back", body_lines(), whole)
+
+  -- Folding composes with the layout rather than being a third view.
+  plugin.on_action("review.find_commit") -- fold again
+  local folded_unified = body_lines()
+  plugin.on_action("review.side")
+  local folded_side = body_lines()
+  check(
+    "still folded side by side",
+    folded_side <= folded_unified + 1,
+    folded_side .. " vs " .. folded_unified
+  )
+  check(
+    "and file1 is still collapsed",
+    (header_of("pkg/file1.txt") or ""):find("▸", 1, true) ~= nil
+  )
+  plugin.on_action("review.side")
 
   diff.forget("s1")
 end

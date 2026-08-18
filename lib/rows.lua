@@ -254,7 +254,11 @@ local function expand(into, row, opts)
   -- would have to step over it.
   if row.kind == "file" then
     local base = selected and sel_style or { fg = role("text_primary"), bold = true }
-    local mark = opts.reviewed and opts.reviewed[row.path] and "✓ " or "  "
+    -- Two marks, because they are two things: `✓` is seen, and the chevron is
+    -- folded. Marking a file folds it, but you can peek into a marked file or
+    -- fold an unmarked one, so both states have to be readable at once.
+    local mark = (opts.reviewed and opts.reviewed[row.path] and "✓" or " ")
+      .. (opts.folded and opts.folded[row.path] and "▸" or "▾")
     local name = M.text_of(row, nil)
     local counts = "  +" .. row.added .. " -" .. row.removed
     local head = mark .. row.status .. " "
@@ -490,6 +494,7 @@ function M.window(rows, first, opts)
         -- The unified rows a paired row points into. Forwarded rather than read
         -- from a closure so `expand` stays a pure function of what it is handed.
         canonical = opts.canonical,
+        folded = opts.folded,
         -- Per ROW, because a diff spans files and its languages with them. Nil
         -- when highlighting is off, which is the whole switch.
         lang = opts.lang_of and opts.lang_of(row) or nil,

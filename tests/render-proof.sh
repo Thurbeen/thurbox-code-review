@@ -266,6 +266,13 @@ shot 08-find-next
 send m
 shot 09-marked
 
+# Folding: marking a file collapses it, and `enter` peeks in without unmarking.
+shot 09a-marked-folds 0.8
+send Enter
+shot 09b-peeked 0.8
+send Enter
+shot 09c-folded-again 0.8
+
 send G
 shot 10-bottom
 

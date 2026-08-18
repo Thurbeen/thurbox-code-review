@@ -61,7 +61,8 @@ which the pane relies on, since it joins the list to the body **by path**.
 | `f` | show or hide the changed-files list |
 | `/` then `↵` | find in the diff, then keep it and stop typing |
 | `n` `N` | next / previous match |
-| `m` | mark the current file seen (**transient** — see below) |
+| `m` | mark the current file seen — which folds it (**transient**, see below) |
+| `↵` | fold or unfold this file (or keep the search, while typing one) |
 | `r` | recompute the diff |
 | `e` | send this review to the session's agent |
 | `Esc` | close the find bar, or go back where you came from |
@@ -155,6 +156,23 @@ Lua and there is no command to write one. So `c` and `s` are declared, appear in
 
 `KERNEL-GAPS.md` states the exact read and command that would close comments, and
 the smaller gaps ranked by what using the pane actually made me want.
+
+## Marking and folding are two things
+
+A file is collapsed when `reviewed XOR override` — v1's rule, kept exactly.
+Marking a file seen folds it, because the point of marking it is that you are
+done; `↵` then flips the override, so you can **peek into a file you have marked
+without unmarking it**, or fold one you have not. Both states are on the header
+at once: `✓` is seen, the chevron is folded.
+
+```text
+ ▾M src/one.lua  +4 -2      seen? no    folded? no
+✓▸M src/one.lua  +4 -2      seen        folded (marking did it)
+✓▾M src/one.lua  +4 -2      seen        peeked into, still seen
+```
+
+Folding filters whichever list is in force, so it composes with side-by-side
+rather than being a third view of the diff.
 
 ## Absent because there is nothing, or because it has not happened yet
 
