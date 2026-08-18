@@ -401,4 +401,18 @@ shot 33-big-bottom 2.0
 send g
 shot 34-big-top 1.0
 
+# The list has a cursor of its own, which is the only way to reach the files
+# whose patch the cap cut. 90 tabs walks past the body's last file (77 of 400).
+#
+# PACED. Sent back-to-back the whole burst was dropped and the frame showed the
+# list exactly where it started — which reads as the feature not working and is
+# the harness outrunning a loop that polls every 10 ms.
+for _ in $(seq 1 90); do send Tab; sleep 0.06; done
+shot 35-list-past-the-cap 1.5
+send m
+shot 36-marked-past-the-cap 1.0
+# And any body movement puts the list back in step.
+send j
+shot 37-list-follows-again 1.0
+
 log "frames in $OUT"

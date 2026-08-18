@@ -53,7 +53,7 @@ which the pane relies on, since it joins the list to the body **by path**.
 | `Ctrl+X` / `F7` | open the review — and, pressed again, leave it (global; `Ctrl+X` passes through to a focused agent, which is why the F-key exists) |
 | `j` `k` `↑` `↓` | move by one logical row |
 | `PgUp` `PgDn` `g` `G` | page, top, bottom |
-| `⇥` `⇧⇥` | next / previous file |
+| `⇥` `⇧⇥` | next / previous file, walking the **list** — which reaches files whose patch the cap cut |
 | `[` `]` | previous / next hunk |
 | `h` `l` `←` `→` | scroll the body horizontally (the gutter stays pinned) |
 | `w` | soft-wrap long lines |
@@ -129,18 +129,29 @@ Lua and there is no command to write one. So `c` and `s` are declared, appear in
 `state`, which survives a reload and **not** a restart; the footer calls them
 "seen" rather than "reviewed" for that reason.
 
-**The changed-files list cannot be scrolled past the patch.** The kernel lists
-every changed file and caps only the patch, so on a large diff the list is
-complete while the body is not — the banner says so ("the patch is capped: 77 of
-400 changed files are shown"). But the list's viewport follows the body's cursor,
-and the body stops at the cap, so files far beyond it are named in the data and
-cannot be brought on screen. Fixing it means giving the list a cursor of its own,
-which is v1's model and this pane's next piece of work rather than a tweak. Files
-whose patch was cut are drawn muted and are not click targets, so the pane never
-offers a jump it cannot make.
-
 `KERNEL-GAPS.md` states the exact read and command that would close comments, and
 the smaller gaps ranked by what using the pane actually made me want.
+
+## Absent because there is nothing, or because it has not happened yet
+
+One rule, in three places, and worth stating because the second and third read as
+inconsistency otherwise:
+
+| | |
+|---|---|
+| the kernel | `ready` with no files is "nothing changed"; `pending` is "not yet". One is a static line, the other animates |
+| the file list | a file whose **patch was cut** is muted and not a click target — there is nothing behind it. A file the **parse has not reached** stays clickable, and the click is honoured the moment it arrives |
+| a binary file | listed with **zero** counts rather than dropped: it changed, and `--numstat` simply has nothing to count |
+
+The middle row is the one that bites. The kernel lists every changed file and caps
+only the patch, so on a large diff the list is complete while the body is not —
+the banner says which ("the patch is capped: 77 of 400 changed files are shown").
+Those extra files are real and reachable: **the list has a cursor of its own**,
+and `⇥` walks it. Where the body can follow it does, and the two stay in step;
+where it cannot, only the list moves and lands on a muted row. Any movement of
+the body puts the list back to following it, so the two can never silently
+disagree. `m` marks whatever the list is on, so a file you had to read elsewhere
+can still be ticked off.
 
 ## Developing
 

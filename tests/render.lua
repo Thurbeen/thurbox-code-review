@@ -465,6 +465,63 @@ do
   diff.forget("s1")
 end
 
+print("== the list has a cursor of its own ==")
+do
+  -- The kernel lists every changed file and caps only the patch, so a large diff
+  -- names files the body has no rows for. Before the list had a cursor, `tab`
+  -- walked the BODY's file rows and those files were unreachable by any key.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+
+  local entry = ready(3, 5)
+  entry.body = body_of(1, 5) -- only file1's patch survived the cut
+  entry.files = {
+    { path = "pkg/file1.txt", added = 5, removed = 5, status = "M" },
+    { path = "pkg/file2.txt", added = 5, removed = 5, status = "M" },
+    { path = "pkg/file3.txt", added = 5, removed = 5, status = "A" },
+  }
+  entry.truncated = true
+  snapshot(entry)
+  render() -- settle the parse
+
+  --- Where the list is pointing when it is NOT simply following the body.
+  ---
+  --- Read from `state`, which is where the pane keeps it, and rendered first so
+  --- the assertions run against a pane that has drawn what it decided.
+  local function highlighted()
+    render()
+    return state_backing["list:s1"]
+  end
+
+  eq("it starts following the body", highlighted(), nil)
+
+  check("tab moves on", plugin.on_action("review.next_file"))
+  eq("onto a file the body does not carry", highlighted(), "pkg/file2.txt")
+  check("and again", plugin.on_action("review.next_file"))
+  eq("to the last listed file", highlighted(), "pkg/file3.txt")
+  check("and stops at the end", plugin.on_action("review.next_file"))
+  eq("rather than wrapping", highlighted(), "pkg/file3.txt")
+
+  -- The property that keeps this from becoming a second thing to track: ANY
+  -- movement of the body puts the list back in step with it.
+  check("moving the body", plugin.on_action("review.next"))
+  eq("puts the list back to following", highlighted(), nil)
+
+  -- And a file the body DOES carry moves both, so they never disagree by accident.
+  plugin.on_action("review.previous_file")
+  eq("stepping back onto a covered file follows the body", highlighted(), nil)
+
+  -- Marking follows the list, so a file with no patch can still be ticked off.
+  plugin.on_action("review.next_file")
+  eq("the list is on the uncovered file", highlighted(), "pkg/file2.txt")
+  plugin.on_action("review.mark")
+  local marks = state_backing["marks:s1"] or {}
+  check("and marking it works", marks["pkg/file2.txt"] == true)
+  has("the tick is drawn", joined(render()), "✓")
+
+  diff.forget("s1")
+end
+
 print("== no session ==")
 do
   _G.thurbox = {

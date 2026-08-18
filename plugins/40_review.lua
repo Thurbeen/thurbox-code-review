@@ -151,6 +151,26 @@ local function set_hscroll(id, at)
   state["hscroll:" .. id] = at > 0 and at or nil
 end
 
+--- Where the changed-files list is pointing, when that is not simply "wherever
+--- the body is".
+---
+--- `nil` means FOLLOW THE BODY, which is what it does almost all the time — the
+--- list is a navigation aid, and an aid that drifts from the thing it is aiding
+--- is a second thing to keep track of. It is set only when the list is driven
+--- somewhere the body cannot go, which since `962aef7` is a real place: the
+--- kernel lists every changed file and caps only the patch, so on a large diff
+--- there are hundreds of files named in the list with no rows behind them.
+---
+--- Any movement of the BODY clears it, so the two can never silently disagree:
+--- either you are driving the list, or the list is following you.
+local function list_at(id)
+  return state["list:" .. id]
+end
+
+local function set_list_at(id, path)
+  state["list:" .. id] = path
+end
+
 --- Files marked reviewed, as `path -> true`.
 ---
 --- TRANSIENT, and said to be transient in the footer. `review_marks` exists in
@@ -439,7 +459,12 @@ end
 --- means keying on the directory itself.
 ---
 --- The body keeps git's order — this is a navigation aid, not a second copy of
---- the diff — so each leaf carries the index it had there.
+--- the diff — so each leaf carries the path it had there.
+---
+--- This is also what defines the order `tab` walks. The keys have to agree with
+--- what is drawn: a next-file that followed git's order while the list showed
+--- directory order would move the highlight somewhere the eye did not expect,
+--- and only on repositories where the two differ.
 local function file_tree(files)
   local order = {}
   for _, file in ipairs(files) do
@@ -479,6 +504,40 @@ end
 --- `n` means the same file in each. That is load-bearing: a leaf carries the
 --- index the BODY rows use, and a click on a file the parse has not produced
 --- rows for yet is deferred rather than dropped (see `wanted`).
+--- The paths of the tree's leaves, in the order they are drawn.
+local function listed_paths(files)
+  local out = {}
+  for _, entry in ipairs(file_tree(files)) do
+    if entry.file then
+      out[#out + 1] = entry.file.path
+    end
+  end
+  return out
+end
+
+--- Step the list cursor from `path` by `delta`, in drawn order.
+local function step_listed(files, path, delta)
+  local order = listed_paths(files)
+  if #order == 0 then
+    return nil
+  end
+  local here = nil
+  for index, candidate in ipairs(order) do
+    if candidate == path then
+      here = index
+    end
+  end
+  -- Nowhere yet: the first step lands on an end rather than nothing.
+  if not here then
+    return delta > 0 and order[1] or order[#order]
+  end
+  local to = here + delta
+  if to < 1 or to > #order then
+    return nil
+  end
+  return order[to]
+end
+
 local function files_pane(files, opts)
   local width, height = opts.width, opts.height
   local tree = file_tree(files)
@@ -699,11 +758,15 @@ end
 
 -- ── navigation, all of it over LOGICAL rows ─────────────────────────────────
 
-local FILE_KINDS = { file = true }
 local HUNK_KINDS = { hunk = true, file = true }
 
---- Move the cursor to `at`, keeping it on a selectable row and in range.
+--- Move the BODY cursor to `at`, keeping it on a selectable row and in range.
+---
+--- Clearing the list override here rather than at each call site is deliberate:
+--- every way the body moves goes through this function, so "the list follows the
+--- body unless you drove it" holds by construction instead of by remembering.
 local function move_to(id, parse, at)
+  set_list_at(id, nil)
   local count = #parse.rows
   if count == 0 then
     return
@@ -977,8 +1040,10 @@ return {
     last_body_height[id] = body_h
 
     local at = math.min(cursor_of(id), math.max(1, #parse.rows))
-    local current_path = diff.path_of(parse, at)
     local covered = diff.covered(parse)
+    -- The list points wherever it was driven, and otherwise at whatever the body
+    -- is showing.
+    local current_path = list_at(id) or diff.path_of(parse, at)
 
     local published_files = entry.files or {}
     local show_files = files_shown() and inner_w >= FILES_MIN_PANE and #published_files > 0
@@ -1235,15 +1300,25 @@ return {
       set_top(id, 1)
     elseif action == "review.bottom" then
       move_to(id, parse, #parse.rows)
-    elseif action == "review.next_file" then
-      local to = diff.jump(parse.rows, at, FILE_KINDS, 1)
+    elseif action == "review.next_file" or action == "review.previous_file" then
+      -- Walks the LIST, not the body's file rows. Before `962aef7` those were
+      -- the same set; now the list is complete and the body is capped, so
+      -- walking the body's rows could reach 77 of 400 files and the other 323
+      -- were named on screen and unreachable by any key.
+      --
+      -- Where the body can follow, it does, and the two stay in step. Where it
+      -- cannot — a file whose patch was cut — only the list moves, and the row
+      -- it lands on is the muted kind that says why.
+      local delta = action == "review.next_file" and 1 or -1
+      local from = list_at(id) or diff.path_of(parse, at)
+      local to = step_listed(entry.files or {}, from, delta)
       if to then
-        move_to(id, parse, to)
-      end
-    elseif action == "review.previous_file" then
-      local to = diff.jump(parse.rows, at, FILE_KINDS, -1)
-      if to then
-        move_to(id, parse, to)
+        local row = diff.file_row(parse.rows, to)
+        if row then
+          move_to(id, parse, row)
+        else
+          set_list_at(id, to)
+        end
       end
     elseif action == "review.next_hunk" then
       local to = diff.jump(parse.rows, at, HUNK_KINDS, 1)
@@ -1298,7 +1373,11 @@ return {
       end
       move_to(id, parse, to)
     elseif action == "review.mark" then
-      local path = diff.path_of(parse, at)
+      -- The LIST's file, so a file whose patch was cut can still be marked seen.
+      -- Reading a file you cannot open here — in an editor, on a forge — and
+      -- ticking it off is a real thing to want, and it is the only thing the
+      -- pane can offer for those files.
+      local path = list_at(id) or diff.path_of(parse, at)
       if path then
         toggle_mark(id, path)
       end
