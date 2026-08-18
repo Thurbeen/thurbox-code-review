@@ -78,9 +78,30 @@ local state_backing, store_backing = {}, {}
 _G.state = shared_table(state_backing)
 _G.store = shared_table(store_backing)
 
+--- The declared settings, as the registry publishes them.
+---
+--- The stub APPLIES `command("set", …)` rather than only recording it, because
+--- the pane's view toggles are settings now — there is no `state` shadow to
+--- assert against, and a stub that swallowed the write would make every toggle
+--- look broken.
+---
+--- Applied immediately where the kernel applies it a frame later. That is the
+--- one place this stub is kinder than the real thing, and it is noted so a test
+--- that depends on the delay is not written here by accident.
+local settings = {}
 local commands = {}
 _G.command = function(kind, args)
   commands[#commands + 1] = { kind = kind, args = args }
+  if kind == "set" and args and args.text then
+    local plugin, id = string.match(args.text, "^(.-)%.(.+)$")
+    for _, entry in ipairs(settings) do
+      if entry.plugin == plugin and entry.id == id then
+        entry.value = args.reset and nil or args.flag
+        return
+      end
+    end
+    settings[#settings + 1] = { plugin = plugin, id = id, value = args.reset and nil or args.flag }
+  end
 end
 
 local real_require, loaded = require, {}
@@ -110,7 +131,7 @@ local function snapshot(diff)
     sessions = { SESSION },
     diffs = diff and { s1 = diff } or {},
     theme = { name = "test", roles = roles },
-    registry = { settings = {}, keys = {} },
+    registry = { settings = settings, keys = {} },
     settings = {},
   }
   store_backing.selected = "s1"
@@ -642,7 +663,7 @@ do
     sessions = {},
     diffs = {},
     theme = { name = "t", roles = roles },
-    registry = { settings = {}, keys = {} },
+    registry = { settings = settings, keys = {} },
   }
   store_backing.selected = nil
   has("it says so", joined(render()), "No session selected")

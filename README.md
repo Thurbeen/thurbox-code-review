@@ -71,9 +71,9 @@ which the pane relies on, since it joins the list to the body **by path**.
 other pane and a chord that means two different things depending on where you
 are standing is worse than one spelled differently here. Marking is `m`.
 
-Two settings appear in `Ctrl+,` → the Plugins tab: whether the pane **starts**
-wrapped, and whether it starts with the files list shown. `w` and `f` override
-for the session you are in.
+`v`, `w`, `f` and the syntax switch are the **same** four settings you see in
+`Ctrl+,` → Plugins — the key writes the setting rather than shadowing it, so the
+modal always shows what the keys did and resetting it there works.
 
 ## The one rule
 

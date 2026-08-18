@@ -189,17 +189,22 @@ local function toggle_mark(id, path)
   state["marks:" .. id] = held
 end
 
--- ── the two toggles ─────────────────────────────────────────────────────────
+-- ── the view toggles ────────────────────────────────────────────────────────
 --
--- Declared as settings so they get a row in the settings modal, and overridden
--- in `state` by their key: the setting is what the pane STARTS as, the key is
--- what you did to it since.
+-- ONE source of truth: the declared setting, read from the registry and written
+-- with `command("set", …)`.
+--
+-- The first version kept an override in `state` beside the setting, on the
+-- reasoning that "the setting is what the pane starts as, the key is what you
+-- did to it since". Both persist, so that bought nothing and cost the property
+-- that matters: `Ctrl+,` showed a value the key had silently overridden, and
+-- resetting it there did nothing. A knob with two homes is a knob that lies in
+-- one of them.
+--
+-- `command("set", { text = "<plugin>.<id>", flag = … })` is the write. It takes
+-- effect a frame later, like every command, which nobody can see.
 
 local function toggle_value(id, declared)
-  local held = state[id]
-  if held ~= nil then
-    return held == true
-  end
   local registry = (thurbox and thurbox.registry and thurbox.registry.settings) or {}
   for _, entry in ipairs(registry) do
     if entry.plugin == NAME and entry.id == id then
@@ -210,6 +215,13 @@ local function toggle_value(id, declared)
     end
   end
   return declared
+end
+
+--- Flip a declared setting, and say what it will become.
+local function set_toggle(id, declared)
+  local now = not toggle_value(id, declared)
+  command("set", { text = NAME .. "." .. id, flag = now })
+  return now
 end
 
 local function wrapping()
@@ -1424,8 +1436,11 @@ return {
       -- the cursor was on, so the layout changes under you and your place does
       -- not.
       local was = in_force
-      state.side = not side_by_side()
-      local now = rows_in_force(parse)
+      -- Computed from what the setting is ABOUT to be, not from a re-read: the
+      -- command lands a frame later, so reading it back here would remap
+      -- through the layout that is still on screen.
+      local going = set_toggle("side", false)
+      local now = going and diff.paired(parse) or parse.rows
       set_cursor(id, diff.remap(parse, was, at, now))
       set_top(id, 1)
       -- Neither offset survives the change: side-by-side pins both, and coming
@@ -1433,12 +1448,12 @@ return {
       -- lost the left edge.
       set_hscroll(id, 0)
     elseif action == "review.wrap" then
-      state.wrap = not wrapping()
+      set_toggle("wrap", false)
       -- Wrapping shows every column, so an offset into the text would only
       -- confuse the next unwrapped frame.
       set_hscroll(id, 0)
     elseif action == "review.files" then
-      state.files = not files_shown()
+      set_toggle("files", true)
     elseif action == "review.find" then
       -- Re-opening keeps the query: `/` after a committed search puts the cursor
       -- back in it rather than making you type it again.
