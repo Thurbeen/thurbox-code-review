@@ -476,11 +476,10 @@ end
 --- recovered from the body to draw a glyph and a rename arrow.
 ---
 --- Both lists come from one `parse_unified_diff` over the same bytes, so index
---- `n` means the same file in each. That is load-bearing — a leaf carries the
---- index the BODY rows use — so it is asserted rather than assumed: a leaf whose
---- index the parse has not reached yet simply cannot be jumped to, and says so
---- by not being a click target.
-local function files_pane(files, parse, opts)
+--- `n` means the same file in each. That is load-bearing: a leaf carries the
+--- index the BODY rows use, and a click on a file the parse has not produced
+--- rows for yet is deferred rather than dropped (see `wanted`).
+local function files_pane(files, opts)
   local width, height = opts.width, opts.height
   local tree = file_tree(files)
   local here = nil
@@ -510,10 +509,6 @@ local function files_pane(files, parse, opts)
     else
       local file = entry.file
       local current = entry.index == opts.current
-      -- Reachable once the body parse has produced the file's rows. Until then
-      -- the row draws normally and is not a click target, because there is no
-      -- row to jump to yet.
-      local reached = parse.files[entry.index] ~= nil
       local mark = opts.reviewed[file.path] and "✓" or " "
       local counts = " +" .. file.added .. " -" .. file.removed
       local indent = string.rep(" ", entry.depth)
@@ -547,8 +542,16 @@ local function files_pane(files, parse, opts)
         type = "text",
         len = 1,
         -- Identity: what makes this a tree rather than more cells.
-        id = reached and ("file:" .. entry.index) or nil,
-        role = reached and "row" or nil,
+        --
+        -- EVERY row, including files the body parse has not reached yet. The
+        -- first version made an unreached row inert, on the reasoning that
+        -- there was no row to jump to — which is true and is the wrong answer:
+        -- the list is complete precisely so it can be navigated while the body
+        -- is still being read, and 38 of 40 dead rows is not "usable while
+        -- parsing". A click on one is remembered and honoured the moment the
+        -- parse reaches it (`wanted`, below).
+        id = "file:" .. entry.index,
+        role = "row",
         text = { line },
       }
     end
@@ -691,6 +694,37 @@ local function move_to(id, parse, at)
   end
   if walk >= 1 and walk <= count then
     set_cursor(id, walk)
+  end
+end
+
+--- A file the user asked for that the parse has not produced rows for yet.
+---
+--- Module-local rather than in `state` for the reason the parse cache is: this
+--- is a fact about a parse in progress, not about the review, and it is
+--- meaningless once the parse finishes. Keyed per session because everything
+--- else here is.
+local wanted = {}
+
+--- Honour a deferred jump once its file has rows.
+---
+--- Called from `render`, which is where the parse advances — so the frame that
+--- reaches the file is the frame that lands on it. Writing `state` from a render
+--- is unusual and deliberate: the alternative is a click that does nothing until
+--- the user presses another key, which is a click that looks broken.
+--- Idempotent, so a second render in the same frame changes nothing.
+local function settle_jump(id, parse, move)
+  local index = wanted[id]
+  if not index then
+    return
+  end
+  local row = diff.file_row(parse.rows, index)
+  if row then
+    wanted[id] = nil
+    move(row)
+  elseif parse.done then
+    -- The parse finished without ever producing that file: it was past the
+    -- 4 MiB cut. Forget it rather than waiting forever.
+    wanted[id] = nil
   end
 end
 
@@ -864,6 +898,9 @@ return {
     end
 
     local parse = diff.parse(id, entry.body or {}, epoch)
+    settle_jump(id, parse, function(row)
+      move_to(id, parse, row)
+    end)
     local reviewed = marks_of(id)
 
     -- State four: ready, and empty. A static line naming the range it looked at,
@@ -957,7 +994,7 @@ return {
       table.insert(
         content,
         1,
-        files_pane(entry.files or {}, parse, {
+        files_pane(entry.files or {}, {
           width = files_w,
           height = body_h,
           current = current_file,
@@ -1061,9 +1098,14 @@ return {
       return false
     end
     local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
-    local row = diff.file_row(parse.rows, tonumber(index))
+    local at = tonumber(index)
+    local row = diff.file_row(parse.rows, at)
     if row then
       move_to(session.id, parse, row)
+    else
+      -- The list is the kernel's and is complete; the body is this pane's and is
+      -- not, yet. Remember the ask and let the parse deliver it.
+      wanted[session.id] = at
     end
     return true
   end,

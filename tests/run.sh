@@ -5,12 +5,15 @@
 # measurement and truncation behave exactly as they do in the pane. Only the
 # `thurbox` snapshot is faked.
 #
-#   THURBOX_REPO=/path/to/thurbox tests/run.sh            # the checks
+#   THURBOX_REPO=/path/to/thurbox tests/run.sh            # the pure modules
+#   THURBOX_REPO=/path/to/thurbox tests/run.sh --render   # the pane's own tree
 #   THURBOX_REPO=/path/to/thurbox tests/run.sh --measure  # the cost, in the
 #                                                         # kernel's own unit
 #
-# The pane itself is not covered here: it needs the plugin VM and a rendered
-# frame. `tests/render-proof.sh` is that half.
+# `--render` calls the pane's `render` against a faked snapshot and asserts on
+# the node tree it returns. It sits between the modules and
+# `tests/render-proof.sh`, which drives a real thurbox in a real terminal: a
+# screenshot shows WHAT was painted, this shows WHY.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,6 +40,10 @@ if [ "${1:-}" = "--measure" ]; then
   fi
   echo "measuring against $DIFF ($(wc -l < "$DIFF") lines)"
   REPO="$HERE" UI="$UI" DIFF="$DIFF" exec lua "$HERE/tests/measure.lua"
+fi
+
+if [ "${1:-}" = "--render" ]; then
+  REPO="$HERE" UI="$UI" exec lua "$HERE/tests/render.lua"
 fi
 
 REPO="$HERE" UI="$UI" exec lua "$HERE/tests/modules.lua"
