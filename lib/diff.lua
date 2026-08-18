@@ -367,6 +367,137 @@ function M.forget(session)
   cache[session] = nil
 end
 
+-- ── the side-by-side view ───────────────────────────────────────────────────
+--
+-- A second flat list over the same parse, and it has to BE a second list rather
+-- than a rendering trick, because side-by-side changes what a selectable unit
+-- is: a deletion and the addition that replaced it share one row. Pairing only
+-- at paint time would leave two logical rows behind one visual one, so `j` would
+-- move the highlight every other press — which is the rule in this file's header
+-- breaking quietly.
+--
+-- v1 draws the same conclusion (`session::review::pair_hunk`) and this mirrors
+-- its algorithm exactly, positional alignment and all: cheap, deterministic, and
+-- language-agnostic, matching the stance already taken for syntax highlighting.
+
+--- Pair the run of `line` rows starting at `from`, appending to `into`.
+---
+--- Returns the index just past the run. Deletions come before additions within a
+--- contiguous change — git emits them that way — so the run is read as "the dels,
+--- then the adds", and they are aligned by position. An uneven remainder leaves
+--- one half blank, which is what a change that added more lines than it removed
+--- looks like.
+local function pair_run(rows, from, into)
+  local at = from
+  while at <= #rows and rows[at].kind == "line" do
+    local row = rows[at]
+    if row.side == "ctx" then
+      -- A context line pairs with itself: the same text on both sides.
+      into[#into + 1] = { kind = "pair", file = row.file, hunk = row.hunk, old = at, new = at }
+      at = at + 1
+    else
+      local del_from = at
+      while at <= #rows and rows[at].kind == "line" and rows[at].side == "del" do
+        at = at + 1
+      end
+      local del_count = at - del_from
+      local add_from = at
+      while at <= #rows and rows[at].kind == "line" and rows[at].side == "add" do
+        at = at + 1
+      end
+      local add_count = at - add_from
+      for k = 0, math.max(del_count, add_count) - 1 do
+        into[#into + 1] = {
+          kind = "pair",
+          file = rows[del_from].file,
+          hunk = rows[del_from].hunk,
+          old = k < del_count and (del_from + k) or nil,
+          new = k < add_count and (add_from + k) or nil,
+        }
+      end
+      -- A run of neither (nothing else is a `line`) would spin; `at` always
+      -- advances above because the outer loop only enters on a `line` row.
+      if at == del_from then
+        at = at + 1
+      end
+    end
+  end
+  return at
+end
+
+--- The paired rows for `parse`, cached and rebuilt as the parse grows.
+---
+--- File, hunk and informational rows carry through unchanged: they span both
+--- columns, so pairing has nothing to do with them.
+function M.paired(parse)
+  if parse.paired and parse.paired_at == parse.at then
+    return parse.paired
+  end
+  local rows, out = parse.rows, {}
+  local at = 1
+  while at <= #rows do
+    if rows[at].kind == "line" then
+      at = pair_run(rows, at, out)
+    else
+      out[#out + 1] = rows[at]
+      at = at + 1
+    end
+  end
+  parse.paired, parse.paired_at = out, parse.at
+  return out
+end
+
+--- The canonical (unified) row a row in either list stands for.
+---
+--- A pair stands for its old side, or its new side when the change only added.
+--- Everything else is itself.
+local function anchor_of(rows, at)
+  local row = rows[at]
+  if not row then
+    return nil
+  end
+  if row.kind == "pair" then
+    return row.old or row.new
+  end
+  return at
+end
+
+--- Move a cursor from one list to the other, landing on the row that holds the
+--- same diff line.
+---
+--- Without it, toggling the layout leaves the index pointing wherever it happens
+--- to land in a list of a different length — which on a hunk with many deletions
+--- is a different file.
+---
+--- `parse` is passed so the direction is known rather than guessed: both lists
+--- carry file and hunk rows, so "does this list contain pairs" is not a test.
+function M.remap(parse, from_rows, at, to_rows)
+  local want = from_rows[at]
+  if not want then
+    return 1
+  end
+  local anchor = anchor_of(from_rows, at)
+
+  -- To the unified list, the anchor IS the index, by construction — every row
+  -- of `parse.rows` stands for itself.
+  if to_rows == parse.rows then
+    return anchor and math.max(1, math.min(anchor, #to_rows)) or 1
+  end
+
+  -- To the paired list: a line is inside a pair, and a file or hunk row was
+  -- carried through by reference, so identity finds it.
+  for index = 1, #to_rows do
+    local row = to_rows[index]
+    if row == want then
+      return index
+    end
+    if row.kind == "pair" and (row.old == anchor or row.new == anchor) then
+      return index
+    end
+  end
+  return math.max(1, math.min(at, #to_rows))
+end
+
 -- ── navigation over the flat list ───────────────────────────────────────────
 --
 -- Every one of these is an index into `rows`. Nothing here knows that a row can
@@ -428,8 +559,11 @@ end
 ---
 --- A path rather than an index, for the reason `file_row` takes one: the list
 --- this highlight is drawn in is not the list these rows were built from.
-function M.path_of(parse, at)
-  local row = parse.rows[at]
+---
+--- Takes the rows in force, since there are two lists now — the unified one and
+--- the paired one — and a cursor indexes whichever is on screen.
+function M.path_of(parse, rows, at)
+  local row = rows[at]
   local file = row and row.file and parse.files[row.file]
   return file and file.path or nil
 end

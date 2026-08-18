@@ -56,7 +56,8 @@ which the pane relies on, since it joins the list to the body **by path**.
 | `⇥` `⇧⇥` | next / previous file, walking the **list** — which reaches files whose patch the cap cut |
 | `[` `]` | previous / next hunk |
 | `h` `l` `←` `→` | scroll the body horizontally (the gutter stays pinned) |
-| `w` | soft-wrap long lines |
+| `v` | side by side, or unified |
+| `w` | soft-wrap long lines (unified only) |
 | `f` | show or hide the changed-files list |
 | `/` then `↵` | find in the diff, then keep it and stop typing |
 | `n` `N` | next / previous match |
@@ -94,8 +95,18 @@ Two shapes in one pane, which is design.md **D2**:
   against the width the kernel resolved, so wrapping, horizontal scrolling and
   colouring are decisions this plugin makes from `ctx.width`.
 
-**D3 held: the body needed no new node kind.** Everything above is `text`, `box`
-and `surface`. There are still four.
+**D3 held: the body needed no new node kind**, and side-by-side is the proof
+rather than the exception. Two columns with one selectable row spanning both are
+two run-groups and a divider inside one line of cells — the plugin owns the
+geometry, so the arithmetic is its own. Everything here is `text`, `box` and
+`surface`. There are still four, and `tests/run.sh --render` asserts it
+mechanically.
+
+The body is **clickable** through the same primitive: a `surface` takes an `id`
+like any node, the kernel records its rect, and a click arrives with `x`/`y`
+inside it. The pane resolves that to a logical row from the map it drew — which
+it can, because it decided where every row went. Per-line identity in the node
+tree was never the only way to be clickable.
 
 Colour is roles only — `diff_added`, `diff_removed`, `diff_added_bg`,
 `diff_removed_bg`, `branch_name`, `selection_*` — so the pane is themed by all

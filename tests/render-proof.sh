@@ -241,6 +241,15 @@ send w
 send l; send l
 shot 05-scrolled-right
 
+# Side by side: two columns of cells, one selectable row across both.
+send h; send h
+send v
+shot 05a-side-by-side 1.0
+send j; send j
+shot 05b-side-moved 1.0
+send v
+shot 05c-unified-again 1.0
+
 send h; send h
 # `greet` contains an `r`, which this pane binds to refresh. Typing it is the
 # regression this frame exists for.

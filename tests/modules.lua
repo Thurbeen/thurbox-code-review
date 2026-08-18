@@ -382,6 +382,150 @@ do
   diff.LINES_PER_FRAME = before
 end
 
+print("== side by side pairs a deletion with the addition that replaced it ==")
+do
+  -- Three shapes in one hunk: an even swap, a change that adds more than it
+  -- removes, and one that removes more than it adds. The uneven ones are where
+  -- positional alignment has to leave a half blank rather than mis-pair.
+  local body = lines_of([[
+diff --git a/p.txt b/p.txt
+--- a/p.txt
++++ b/p.txt
+@@ -1,9 +1,10 @@
+ context before
+-one gone
+-two gone
++one new
++two new
+ between
+-only removed
++first added
++second added
++third added
+ context after
+]])
+  local parse = diff.parse("sbs", body, 0)
+  local paired = diff.paired(parse)
+
+  local function shape(row)
+    local old = row.old and parse.rows[row.old].text or nil
+    local new = row.new and parse.rows[row.new].text or nil
+    return (old or "-") .. " | " .. (new or "-")
+  end
+
+  local body_rows = {}
+  for _, row in ipairs(paired) do
+    if row.kind == "pair" then
+      body_rows[#body_rows + 1] = shape(row)
+    end
+  end
+
+  eq("a context line pairs with itself", body_rows[1], "context before | context before")
+  eq("an even swap aligns positionally", body_rows[2], "one gone | one new")
+  eq("and so does its partner", body_rows[3], "two gone | two new")
+  eq("context again", body_rows[4], "between | between")
+  eq("an uneven change pairs what it can", body_rows[5], "only removed | first added")
+  eq("and leaves the old side blank", body_rows[6], "- | second added")
+  eq("for every extra addition", body_rows[7], "- | third added")
+  eq("then context", body_rows[8], "context after | context after")
+  eq("nothing else", #body_rows, 8)
+
+  -- Every canonical body line appears exactly once, on exactly one side. This is
+  -- the property that makes the paired list a VIEW and not a lossy summary.
+  --- Count an appearance, written out rather than looped over
+  --- `{ row.old, row.new }`: half a pair is nil, and `ipairs` STOPS at the first
+  --- hole — so a pair with a blank old side recorded neither of its sides and
+  --- the check reported a line as unplaced that the assertions above had just
+  --- shown in place.
+  local seen = {}
+  local function saw(index)
+    if index then
+      seen[index] = (seen[index] or 0) + 1
+    end
+  end
+  for _, row in ipairs(paired) do
+    if row.kind == "pair" then
+      saw(row.old)
+      saw(row.new)
+    end
+  end
+  local lines, once, why = 0, true, nil
+  for at, row in ipairs(parse.rows) do
+    if row.kind == "line" then
+      lines = lines + 1
+      -- A context line is on BOTH sides of one row, which is one appearance of
+      -- one row; everything else appears once.
+      local want = row.side == "ctx" and 2 or 1
+      if seen[at] ~= want then
+        once = false
+        why = why
+          or string.format(
+            "%q (%s) placed %s times, want %d",
+            row.text,
+            row.side,
+            tostring(seen[at]),
+            want
+          )
+      end
+    end
+  end
+  check("every body line is placed exactly once", once, why)
+  eq("and none was invented", lines, 11)
+
+  -- The rule: one logical row is one selectable unit. Pairing MERGES rows, so
+  -- the paired list must be shorter than the unified one by the number of
+  -- deletions that found a partner.
+  check("the paired list is shorter", #paired < #parse.rows, #paired .. " vs " .. #parse.rows)
+end
+
+print("== toggling the layout keeps your place ==")
+do
+  local body = lines_of([[
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,4 +1,4 @@
+ one
+-two
++TWO
+ three
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1,2 +1,2 @@
+ four
+-five
++FIVE
+]])
+  local parse = diff.parse("remap", body, 0)
+  local paired = diff.paired(parse)
+
+  -- Standing on `-five` in the unified list must land on the pair holding it,
+  -- not on whatever index that number happens to be in a shorter list.
+  local at
+  for index, row in ipairs(parse.rows) do
+    if row.kind == "line" and row.text == "five" then
+      at = index
+    end
+  end
+  local to = diff.remap(parse, parse.rows, at, paired)
+  eq("the pair holds the line you were on", paired[to].old, at)
+  eq("and it is a pair", paired[to].kind, "pair")
+
+  -- And back again.
+  eq("round trips", diff.remap(parse, paired, to, parse.rows), at)
+
+  -- A file header is the same table in both lists, so it maps by identity.
+  local file_at
+  for index, row in ipairs(parse.rows) do
+    if row.kind == "file" and row.path == "b.txt" then
+      file_at = index
+    end
+  end
+  local file_to = diff.remap(parse, parse.rows, file_at, paired)
+  check("a file row maps to itself", paired[file_to] == parse.rows[file_at])
+end
+
 print("== the epoch invalidates ==")
 do
   local a = lines_of("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,1 +1,1 @@\n+one")

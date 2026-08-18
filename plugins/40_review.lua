@@ -219,6 +219,20 @@ local function files_shown()
   return toggle_value("files", true)
 end
 
+--- Unified, or old-and-new side by side. v1's `v`.
+local function side_by_side()
+  return toggle_value("side", false)
+end
+
+--- The rows in force: two flat lists over one parse, and which one is on screen
+--- decides what a selectable unit IS. See `lib/diff.lua`'s pairing section.
+local function rows_in_force(parse)
+  if side_by_side() then
+    return diff.paired(parse)
+  end
+  return parse.rows
+end
+
 -- ── find-in-diff ────────────────────────────────────────────────────────────
 --
 -- Per session, like the cursor and for the same reason. Held globally, a query
@@ -272,23 +286,28 @@ end
 --- a copy on every read, and this list can hold thousands of entries.
 local match_cache = {}
 
-local function matches(id, parse, needle)
+local function matches(id, parse, in_force, needle)
   if not needle then
     return {}
   end
+  -- Keyed on the LAYOUT as well: the two lists index differently, so a match
+  -- list built against one is a set of wrong row numbers in the other.
+  local layout = side_by_side() and "side" or "unified"
   local held = match_cache[id]
-  if not (held and held.needle == needle and held.epoch == epochs[id]) then
-    held = { needle = needle, epoch = epochs[id], scanned = 0, list = {} }
+  if
+    not (held and held.needle == needle and held.epoch == epochs[id] and held.layout == layout)
+  then
+    held = { needle = needle, epoch = epochs[id], layout = layout, scanned = 0, list = {} }
     match_cache[id] = held
   end
   local lowered = string.lower(needle)
   local list = held.list
-  for at = held.scanned + 1, #parse.rows do
-    if string.find(string.lower(rows.text_of(parse.rows[at])), lowered, 1, true) then
+  for at = held.scanned + 1, #in_force do
+    if string.find(string.lower(rows.text_of(in_force[at], parse.rows)), lowered, 1, true) then
       list[#list + 1] = at
     end
   end
-  held.scanned = #parse.rows
+  held.scanned = #in_force
   return list
 end
 
@@ -729,7 +748,7 @@ local function footer(width, ready)
     put("file", "⇥")
     put("hunk", "[ ]")
     put("find", "/")
-    put("wrap", "w")
+    put("split", "v")
     put("seen", "m")
     put("refresh", "r")
     put("send", "e")
@@ -765,9 +784,9 @@ local HUNK_KINDS = { hunk = true, file = true }
 --- Clearing the list override here rather than at each call site is deliberate:
 --- every way the body moves goes through this function, so "the list follows the
 --- body unless you drove it" holds by construction instead of by remembering.
-local function move_to(id, parse, at)
+local function move_to(id, in_force, at)
   set_list_at(id, nil)
-  local count = #parse.rows
+  local count = #in_force
   if count == 0 then
     return
   end
@@ -777,12 +796,12 @@ local function move_to(id, parse, at)
   local from = cursor_of(id)
   local step = at >= from and 1 or -1
   local walk = at
-  while walk >= 1 and walk <= count and not diff.selectable(parse.rows[walk]) do
+  while walk >= 1 and walk <= count and not diff.selectable(in_force[walk]) do
     walk = walk + step
   end
   if walk < 1 or walk > count then
     walk = at
-    while walk >= 1 and walk <= count and not diff.selectable(parse.rows[walk]) do
+    while walk >= 1 and walk <= count and not diff.selectable(in_force[walk]) do
       walk = walk - step
     end
   end
@@ -806,12 +825,12 @@ local wanted = {}
 --- is unusual and deliberate: the alternative is a click that does nothing until
 --- the user presses another key, which is a click that looks broken.
 --- Idempotent, so a second render in the same frame changes nothing.
-local function settle_jump(id, parse, move)
+local function settle_jump(id, parse, in_force, move)
   local path = wanted[id]
   if not path then
     return
   end
-  local row = diff.file_row(parse.rows, path)
+  local row = diff.file_row(in_force, path)
   if row then
     wanted[id] = nil
     move(row)
@@ -823,15 +842,27 @@ local function settle_jump(id, parse, move)
   end
 end
 
+--- What the body's visual lines mapped to, from the frame just drawn.
+---
+--- A surface carries no per-line identity — that is the trade D2 accepts — so a
+--- click on it arrives as a coordinate, and turning a coordinate back into a
+--- logical row is the plugin's job. It can do it because it OWNS the geometry:
+--- it decided which rows went where, and this is that decision written down.
+---
+--- Which is the answer to whether a dense pane needs a fifth node kind for
+--- clickable body lines. It does not: `surface` takes an `id` like any node, the
+--- paint walk records the rect, and `on_click` hands back `x`/`y` inside it.
+local last_body_map = {}
+
 --- The pane's own height for the body, which `on_action` needs and only
 --- `render` knows. Recorded from the last frame rather than recomputed, which is
 --- the documented way round: a value derived while drawing is invisible to a key
 --- unless the drawing wrote it down.
 local last_body_height = {}
 
-local function page(id, parse, direction)
+local function page(id, in_force, direction)
   local height = last_body_height[id] or PAGE
-  move_to(id, parse, cursor_of(id) + direction * math.max(1, height - 1))
+  move_to(id, in_force, cursor_of(id) + direction * math.max(1, height - 1))
 end
 
 -- ── the plugin ──────────────────────────────────────────────────────────────
@@ -850,6 +881,7 @@ return {
   pills = { { action = "review.open", label = "Review", priority = 20 } },
 
   settings = {
+    { id = "side", desc = "Start with the diff side by side rather than unified", default = false },
     { id = "wrap", desc = "Start with long diff lines soft-wrapped", default = false },
     { id = "files", desc = "Show the changed-files list beside the diff", default = true },
   },
@@ -891,6 +923,7 @@ return {
     { key = "right", action = "review.right", desc = "scroll right" },
     { key = "h", action = "review.left", desc = "scroll left" },
     { key = "left", action = "review.left", desc = "scroll left" },
+    { key = "v", action = "review.side", desc = "side-by-side, or unified" },
     { key = "w", action = "review.wrap", desc = "soft-wrap long lines" },
     { key = "f", action = "review.files", desc = "show the changed-files list" },
     { key = "/", action = "review.find", desc = "find in the diff" },
@@ -993,8 +1026,13 @@ return {
     end
 
     local parse = diff.parse(id, entry.body or {}, epoch)
-    settle_jump(id, parse, function(row)
-      move_to(id, parse, row)
+    -- The rows on screen. Two flat lists over one parse — unified, or paired for
+    -- the side-by-side layout — and which one is in force decides what a
+    -- selectable unit IS, so everything downstream takes this and not
+    -- `parse.rows`.
+    local in_force = rows_in_force(parse)
+    settle_jump(id, parse, in_force, function(row)
+      move_to(id, in_force, row)
     end)
     local reviewed = marks_of(id)
 
@@ -1033,17 +1071,17 @@ return {
     end
 
     local inner_w, inner_h = math.max(1, width - 2), math.max(1, height - 2)
-    local hits = matches(id, parse, query(id))
+    local hits = matches(id, parse, in_force, query(id))
     local bar = find_open(id) and 1 or 0
     local notice = entry.truncated and 1 or 0
     local body_h = math.max(1, inner_h - bar - notice)
     last_body_height[id] = body_h
 
-    local at = math.min(cursor_of(id), math.max(1, #parse.rows))
+    local at = math.min(cursor_of(id), math.max(1, #in_force))
     local covered = diff.covered(parse)
     -- The list points wherever it was driven, and otherwise at whatever the body
     -- is showing.
-    local current_path = list_at(id) or diff.path_of(parse, at)
+    local current_path = list_at(id) or diff.path_of(parse, in_force, at)
 
     local published_files = entry.files or {}
     local show_files = files_shown() and inner_w >= FILES_MIN_PANE and #published_files > 0
@@ -1053,20 +1091,25 @@ return {
     end
     local body_w = math.max(1, inner_w - (show_files and (files_w + 1) or 0))
 
-    local wrap = wrapping()
+    -- Side by side neither wraps nor scrolls horizontally: a wrapped half would
+    -- have to push the other half's rows down to stay level, and the alignment
+    -- IS the layout. v1 pins both for the same reason.
+    local wrap = wrapping() and not side_by_side()
     local digits = rows.gutter_digits(parse)
     local window = {
       width = body_w,
       height = body_h,
       digits = digits,
       wrap = wrap,
-      hscroll = wrap and 0 or hscroll_of(id),
+      hscroll = (wrap or side_by_side()) and 0 or hscroll_of(id),
       query = query(id) and string.lower(query(id)) or nil,
       reviewed = reviewed,
+      canonical = parse.rows,
       selected = at,
     }
-    local top = rows.scroll_to(parse.rows, math.min(top_of(id), at), window)
-    local lines, _, used = rows.window(parse.rows, top, window)
+    local top = rows.scroll_to(in_force, math.min(top_of(id), at), window)
+    local lines, logical, used = rows.window(in_force, top, window)
+    last_body_map[id] = logical
     if used ~= top_of(id) then
       set_top(id, used)
     end
@@ -1074,7 +1117,10 @@ return {
     -- The diff body: a SURFACE. Its own `scroll` stays 0 — the window above is
     -- logical, and the surface's offset counts visual lines, so letting it
     -- scroll too would be two anchors fighting over one body.
-    local body = { type = "surface", cells = lines, fill = 1 }
+    -- `id` on a surface is what makes the body clickable. Nothing else is
+    -- needed: the kernel records the rect of any node carrying identity, and a
+    -- click comes back with coordinates inside it.
+    local body = { type = "surface", id = "body", cells = lines, fill = 1 }
 
     local content = { body }
     if show_files then
@@ -1158,7 +1204,7 @@ return {
       -- `inner_h`, not the pane height: the column is painted into the inner
       -- rows, so a bar built for two rows more put its ▼ past the last one and
       -- lost it. Caught in a capture, not in a check.
-      right_column = scrollbar(inner_h, #parse.rows, at - 1),
+      right_column = scrollbar(inner_h, #in_force, at - 1),
       body = { type = "box", axis = "vertical", fill = 1, children = stack },
     })
   end,
@@ -1185,6 +1231,24 @@ return {
   end,
 
   on_click = function(hit)
+    if hit.id == "body" then
+      -- A coordinate, resolved through the map the last frame recorded. The
+      -- surface has no per-line identity to hand back, and does not need one.
+      local session = selected()
+      local map = session and last_body_map[session.id]
+      local row = map and map[(hit.y or 0) + 1]
+      if not row then
+        return false
+      end
+      local entry = published(session)
+      if not entry or entry.state ~= "ready" then
+        return false
+      end
+      local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
+      move_to(session.id, rows_in_force(parse), row)
+      return true
+    end
+
     local path = hit.id and string.match(hit.id, "^file:(.+)$")
     if not path then
       return false
@@ -1198,9 +1262,10 @@ return {
       return false
     end
     local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
-    local row = diff.file_row(parse.rows, path)
+    local in_force = rows_in_force(parse)
+    local row = diff.file_row(in_force, path)
     if row then
-      move_to(session.id, parse, row)
+      move_to(session.id, in_force, row)
     else
       -- The list is the kernel's and is complete; the body is this pane's and is
       -- not, yet. Remember the ask and let the parse deliver it.
@@ -1285,21 +1350,22 @@ return {
       return true
     end
     local parse = diff.parse(id, entry.body or {}, epochs[id] or 0)
-    local at = math.min(cursor_of(id), math.max(1, #parse.rows))
+    local in_force = rows_in_force(parse)
+    local at = math.min(cursor_of(id), math.max(1, #in_force))
 
     if action == "review.next" then
-      move_to(id, parse, at + 1)
+      move_to(id, in_force, at + 1)
     elseif action == "review.previous" then
-      move_to(id, parse, at - 1)
+      move_to(id, in_force, at - 1)
     elseif action == "review.page_down" then
-      page(id, parse, 1)
+      page(id, in_force, 1)
     elseif action == "review.page_up" then
-      page(id, parse, -1)
+      page(id, in_force, -1)
     elseif action == "review.top" then
-      move_to(id, parse, 1)
+      move_to(id, in_force, 1)
       set_top(id, 1)
     elseif action == "review.bottom" then
-      move_to(id, parse, #parse.rows)
+      move_to(id, in_force, #in_force)
     elseif action == "review.next_file" or action == "review.previous_file" then
       -- Walks the LIST, not the body's file rows. Before `962aef7` those were
       -- the same set; now the list is complete and the body is capped, so
@@ -1310,30 +1376,46 @@ return {
       -- cannot — a file whose patch was cut — only the list moves, and the row
       -- it lands on is the muted kind that says why.
       local delta = action == "review.next_file" and 1 or -1
-      local from = list_at(id) or diff.path_of(parse, at)
+      local from = list_at(id) or diff.path_of(parse, in_force, at)
       local to = step_listed(entry.files or {}, from, delta)
       if to then
-        local row = diff.file_row(parse.rows, to)
+        local row = diff.file_row(in_force, to)
         if row then
-          move_to(id, parse, row)
+          move_to(id, in_force, row)
         else
           set_list_at(id, to)
         end
       end
     elseif action == "review.next_hunk" then
-      local to = diff.jump(parse.rows, at, HUNK_KINDS, 1)
+      local to = diff.jump(in_force, at, HUNK_KINDS, 1)
       if to then
-        move_to(id, parse, to)
+        move_to(id, in_force, to)
       end
     elseif action == "review.previous_hunk" then
-      local to = diff.jump(parse.rows, at, HUNK_KINDS, -1)
+      local to = diff.jump(in_force, at, HUNK_KINDS, -1)
       if to then
-        move_to(id, parse, to)
+        move_to(id, in_force, to)
       end
     elseif action == "review.right" then
       set_hscroll(id, hscroll_of(id) + HSCROLL_STEP)
     elseif action == "review.left" then
       set_hscroll(id, math.max(0, hscroll_of(id) - HSCROLL_STEP))
+    elseif action == "review.side" then
+      -- The cursor is an index into the list in force, and the two lists are
+      -- different lengths — a hunk of twenty deletions is twenty rows unified
+      -- and twenty paired rows only if twenty additions matched it. Left alone,
+      -- `v` would move you to a different file. Remapped through the diff line
+      -- the cursor was on, so the layout changes under you and your place does
+      -- not.
+      local was = in_force
+      state.side = not side_by_side()
+      local now = rows_in_force(parse)
+      set_cursor(id, diff.remap(parse, was, at, now))
+      set_top(id, 1)
+      -- Neither offset survives the change: side-by-side pins both, and coming
+      -- back from it with a stale horizontal scroll would look like the pane had
+      -- lost the left edge.
+      set_hscroll(id, 0)
     elseif action == "review.wrap" then
       state.wrap = not wrapping()
       -- Wrapping shows every column, so an offset into the text would only
@@ -1348,7 +1430,7 @@ return {
     elseif action == "review.find_commit" then
       return false
     elseif action == "review.find_next" or action == "review.find_previous" then
-      local hits = matches(id, parse, query(id))
+      local hits = matches(id, parse, in_force, query(id))
       if #hits == 0 then
         return true
       end
@@ -1371,13 +1453,13 @@ return {
         end
         to = to or hits[#hits]
       end
-      move_to(id, parse, to)
+      move_to(id, in_force, to)
     elseif action == "review.mark" then
       -- The LIST's file, so a file whose patch was cut can still be marked seen.
       -- Reading a file you cannot open here — in an editor, on a forge — and
       -- ticking it off is a real thing to want, and it is the only thing the
       -- pane can offer for those files.
-      local path = list_at(id) or diff.path_of(parse, at)
+      local path = list_at(id) or diff.path_of(parse, in_force, at)
       if path then
         toggle_mark(id, path)
       end
@@ -1385,7 +1467,15 @@ return {
       command("send", {
         session = id,
         text = "Please address the following code review:\n\n"
-          .. export.markdown(session, parse, at, marks_of(id)),
+          -- Exported from the CANONICAL rows whichever layout is on screen: a
+          -- quoted hunk is a diff, and a diff is unified. Which columns the
+          -- reviewer happened to be looking at is not the agent's business.
+          .. export.markdown(
+            session,
+            parse,
+            diff.remap(parse, in_force, at, parse.rows),
+            marks_of(id)
+          ),
       })
       -- Back where you came from to watch the agent read it — by the same
       -- toggle, so this names no pane either.

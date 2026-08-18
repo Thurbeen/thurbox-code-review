@@ -177,7 +177,17 @@ local SIGN = { add = "+", del = "-", ctx = " " }
 
 --- The body text of a row, as it would appear with no folding: what find
 --- matches against, and what `send`-to-agent quotes.
-function M.text_of(row)
+function M.text_of(row, canonical)
+  if row.kind == "pair" then
+    -- Both halves, so a search finds a word on either side of the screen. The
+    -- two are the same string for a context line, which pairs with itself.
+    local old = row.old and canonical[row.old] and canonical[row.old].text or ""
+    local new = row.new and canonical[row.new] and canonical[row.new].text or ""
+    if old == new then
+      return old
+    end
+    return old .. " " .. new
+  end
   if row.kind == "file" then
     local name = row.path or ""
     if row.old_path then
@@ -211,7 +221,7 @@ local function expand(into, row, opts)
   if row.kind == "file" then
     local base = selected and sel_style or { fg = role("text_primary"), bold = true }
     local mark = opts.reviewed and opts.reviewed[row.path] and "✓ " or "  "
-    local name = M.text_of(row)
+    local name = M.text_of(row, nil)
     local counts = "  +" .. row.added .. " -" .. row.removed
     local head = mark .. row.status .. " "
     local body = pad(head .. name .. counts, width)
@@ -249,6 +259,85 @@ local function expand(into, row, opts)
     into[#into + 1] = {
       { text = pad(row.text or "", width), style = { fg = role("text_muted"), italic = true } },
     }
+    return 1
+  end
+
+  -- A paired row: two columns, one selectable unit.
+  --
+  -- This is where D2 is tested hardest — one logical row spanning two columns of
+  -- cells — and it needed nothing new. Each half is the same gutter/sign/text it
+  -- is in the unified layout, measured against half the width the kernel
+  -- resolved, and a divider between them. The plugin knows the geometry, which
+  -- is the whole claim of the surface.
+  if row.kind == "pair" then
+    local canonical = opts.canonical
+    local half = math.max(1, math.floor((width - 1) / 2))
+    local digits = opts.digits
+    local gutter_w = M.gutter_width(digits)
+    local body_w = math.max(1, half - gutter_w)
+
+    --- One side's runs, or a blank column when that side has no line.
+    local function side(index)
+      local line = index and canonical[index]
+      if not line then
+        -- A change that added more lines than it removed leaves the old side
+        -- blank on the overflow, and the reverse for a deletion. Blank, not
+        -- absent: the row still has to be `half` wide or the divider walks.
+        return {
+          {
+            text = string.rep(" ", half),
+            style = { bg = selected and role("selection_bg") or nil },
+          },
+        }
+      end
+      local fg = selected and role("selection_fg") or side_fg(line.side)
+      local bg = selected and role("selection_bg") or side_bg(line.side)
+      -- ONE number, not two: a side-by-side column has only its own side to
+      -- number, and printing both would spend a quarter of the column repeating
+      -- what the other half already says.
+      local number = tostring(line.old_no or line.new_no or "")
+      local runs = {
+        {
+          text = string.rep(" ", math.max(0, digits * 2 + 1 - len(number))) .. number,
+          style = selected and sel_style or { fg = role("text_muted"), bg = bg },
+        },
+        { text = SIGN[line.side] or " ", style = { fg = fg, bg = bg } },
+        { text = " ", style = { fg = fg, bg = bg } },
+      }
+      local text = slice(line.text or "", 1, body_w)
+      for _, run in
+        ipairs(
+          runs_for(
+            text,
+            { fg = fg, bg = bg, bold = selected or nil },
+            query,
+            selected and sel_style or hit_style
+          )
+        )
+      do
+        runs[#runs + 1] = run
+      end
+      local used = len(text)
+      if used < body_w then
+        runs[#runs + 1] = { text = string.rep(" ", body_w - used), style = { fg = fg, bg = bg } }
+      end
+      return runs
+    end
+
+    local left = side(row.old)
+    local right = side(row.new)
+    local runs = {}
+    for _, run in ipairs(left) do
+      runs[#runs + 1] = run
+    end
+    runs[#runs + 1] = {
+      text = "│",
+      style = { fg = role("border_unfocused"), bg = selected and role("selection_bg") or nil },
+    }
+    for _, run in ipairs(right) do
+      runs[#runs + 1] = run
+    end
+    into[#into + 1] = runs
     return 1
   end
 
@@ -306,6 +395,9 @@ end
 --- How many visual lines a logical row needs. Used by the scroll converger, so
 --- it must agree with `expand` exactly — hence one expression, not two.
 local function height_of(row, opts)
+  -- A pair is one row, always: side-by-side does not wrap (v1 pins the
+  -- horizontal scroll there too), because a wrapped half would have to push the
+  -- other half's rows down to stay aligned, and the alignment IS the layout.
   if row.kind ~= "line" or not opts.wrap then
     return 1
   end
@@ -352,6 +444,9 @@ function M.window(rows, first, opts)
         hscroll = opts.hscroll,
         query = opts.query,
         reviewed = opts.reviewed,
+        -- The unified rows a paired row points into. Forwarded rather than read
+        -- from a closure so `expand` stays a pure function of what it is handed.
+        canonical = opts.canonical,
         selected = at == selected,
       })
       for _ = 1, produced do
@@ -362,6 +457,16 @@ function M.window(rows, first, opts)
     -- reachable with wrapping on, where a row above can be many lines tall.
     if sel_first and sel_first > height and first < selected then
       first = first + 1
+    elseif #lines < height and first > 1 then
+      -- A SHORT PAGE with content above it: pull the window back so the last row
+      -- sits at the bottom. Reachable whenever the row count shrinks under a
+      -- remembered offset — switching to the paired layout nearly halves it, and
+      -- a refresh to a smaller diff does the same — and the symptom is a body
+      -- that draws a handful of lines with blank space beneath them.
+      --
+      -- Mutually exclusive with the branch above: a short page means everything
+      -- fit, so the selection cannot also be below the fold.
+      first = first - 1
     else
       while #lines > height do
         table.remove(lines)

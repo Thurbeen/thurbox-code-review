@@ -227,6 +227,8 @@ local function selected_line(node)
   return nil
 end
 
+local rows_len = require("thurbox-code-review.lib.rows").len
+
 local function ids(node)
   local out = {}
   walk(node, function(item)
@@ -234,6 +236,21 @@ local function ids(node)
       out[#out + 1] = item.id
     end
   end)
+  return out
+end
+
+--- The changed-files list's ids only.
+---
+--- Separate from `ids` because the diff BODY carries one too — a `surface` with
+--- an `id`, which is how a click on it reaches the pane — and counting it as a
+--- file row made two assertions about the list off by one.
+local function file_ids(node)
+  local out = {}
+  for _, id in ipairs(ids(node)) do
+    if id:match("^file:") then
+      out[#out + 1] = id
+    end
+  end
   return out
 end
 
@@ -323,7 +340,7 @@ end
 print("== the changed-files list carries identity ==")
 do
   snapshot(ready(3, 5))
-  local found = ids(render())
+  local found = file_ids(render())
   eq("one id per file", #found, 3)
   eq("named by path, not by index", found[1], "file:pkg/file1.txt")
 end
@@ -376,10 +393,10 @@ do
     end
   end
   check("some rows are on screen", shown > 10, "only " .. shown)
-  eq("every row on screen is a click target", #ids(first), shown)
+  eq("every row on screen is a click target", #file_ids(first), shown)
 
   local targets = {}
-  for _, id in ipairs(ids(first)) do
+  for _, id in ipairs(file_ids(first)) do
     targets[id] = true
   end
   check("including one past the parse", targets["file:pkg/file30.txt"] == true)
@@ -451,7 +468,7 @@ do
   has("the banner counts files, not only bytes", drawn, "2 of 3 changed files are shown")
 
   local targets = {}
-  for _, id in ipairs(ids(tree)) do
+  for _, id in ipairs(file_ids(tree)) do
     targets[id] = true
   end
   check("a file the body carries is clickable", targets["file:pkg/file1.txt"] == true)
@@ -518,6 +535,103 @@ do
   local marks = state_backing["marks:s1"] or {}
   check("and marking it works", marks["pkg/file2.txt"] == true)
   has("the tick is drawn", joined(render()), "✓")
+
+  diff.forget("s1")
+end
+
+print("== side by side ==")
+do
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+  snapshot(ready(2, 6))
+  render()
+
+  local before = surface_cells(render()) or {}
+  check("unified draws rows", #before > 0)
+
+  check("v switches layout", plugin.on_action("review.side"))
+  local tree = render()
+  local after = surface_cells(tree) or {}
+
+  -- The claim D2 is tested by: two columns of cells, one selectable row across
+  -- both, and no new node kind to do it.
+  local used = kinds(tree)
+  for kind in pairs(used) do
+    check("still one of the four: " .. kind, ({
+      text = true,
+      box = true,
+      input = true,
+      surface = true,
+    })[kind] ~= nil)
+  end
+
+  -- A paired body row carries the divider, which is what makes it two columns.
+  local divided = 0
+  for _, line in ipairs(after) do
+    for _, run in ipairs(line) do
+      if run.text == "│" then
+        divided = divided + 1
+      end
+    end
+  end
+  check("paired rows are split by a divider", divided > 0, "found " .. divided)
+
+  -- Every line is the SAME width — measured against each other rather than
+  -- against a number, since the body's width is what the changed-files list
+  -- leaves it. A half that did not pad would walk the divider down the screen.
+  local ragged, want = nil, nil
+  for index, line in ipairs(after) do
+    local total = 0
+    for _, run in ipairs(line) do
+      total = total + rows_len(run.text)
+    end
+    want = want or total
+    if total ~= want then
+      ragged = ragged or ("line " .. index .. " measures " .. total .. ", not " .. want)
+    end
+  end
+  check("every paired line is the same width", ragged == nil, ragged)
+
+  -- Merging means fewer rows, which means `j` moves once per PAIR — the rule.
+  check("the paired body is shorter", #after < #before, #after .. " vs " .. #before)
+
+  check("v switches back", plugin.on_action("review.side"))
+  eq("and the layout is unified again", #(surface_cells(render()) or {}), #before)
+
+  diff.forget("s1")
+end
+
+print("== the body is clickable, without a fifth node kind ==")
+do
+  -- The question side-by-side was meant to settle: does a dense pane need a node
+  -- kind with per-line identity? It does not. A `surface` takes an `id` like any
+  -- node, the kernel records its rect, and a click arrives with coordinates
+  -- inside it — which the plugin can resolve because it decided the geometry.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+  snapshot(ready(3, 6))
+  render()
+  plugin.on_action("review.top")
+
+  local body
+  walk(render(), function(item)
+    if item.type == "surface" then
+      body = item
+    end
+  end)
+  eq("the surface carries identity", body and body.id, "body")
+
+  -- Click ten lines down and the cursor lands on whatever was drawn there.
+  local before = selected_line(render())
+  check("clicking the body is handled", plugin.on_click({ id = "body", x = 4, y = 10 }))
+  local after = selected_line(render())
+  check("and the selection moved", before ~= after, tostring(before) .. " -> " .. tostring(after))
+
+  -- A click past the drawn rows is declined rather than guessed at.
+  check(
+    "a click below the content is declined",
+    plugin.on_click({ id = "body", x = 0, y = 9999 }) == false
+  )
 
   diff.forget("s1")
 end
