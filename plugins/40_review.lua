@@ -46,6 +46,7 @@ local widgets = require("lib.widgets")
 local diff = require("thurbox-code-review.lib.diff")
 local rows = require("thurbox-code-review.lib.rows")
 local export = require("thurbox-code-review.lib.export")
+local syntax = require("thurbox-code-review.lib.syntax")
 
 --- What this pane is called: the focus ring, `command("focus", …)`, and the
 --- name a settings lookup filters on.
@@ -217,6 +218,14 @@ end
 
 local function files_shown()
   return toggle_value("files", true)
+end
+
+--- Colour the code as well as the change.
+---
+--- On by default, as v1 has it. Off is a setting rather than a key: the keys are
+--- crowded and this is a preference, not a thing you flip while reading.
+local function highlighting()
+  return toggle_value("syntax", true)
 end
 
 --- Unified, or old-and-new side by side. v1's `v`.
@@ -882,6 +891,7 @@ return {
 
   settings = {
     { id = "side", desc = "Start with the diff side by side rather than unified", default = false },
+    { id = "syntax", desc = "Colour the code, not only the change", default = true },
     { id = "wrap", desc = "Start with long diff lines soft-wrapped", default = false },
     { id = "files", desc = "Show the changed-files list beside the diff", default = true },
   },
@@ -1105,6 +1115,12 @@ return {
       query = query(id) and string.lower(query(id)) or nil,
       reviewed = reviewed,
       canonical = parse.rows,
+      -- A row's language, by the file it belongs to. A function rather than a
+      -- table because the window only ever asks about the rows it draws — a
+      -- 400-file diff would otherwise build 400 entries a frame to use forty.
+      lang_of = highlighting() and function(row)
+        return syntax.lang_of(parse, row.file)
+      end or nil,
       selected = at,
     }
     local top = rows.scroll_to(in_force, math.min(top_of(id), at), window)

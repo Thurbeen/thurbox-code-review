@@ -526,6 +526,87 @@ diff --git a/b.txt b/b.txt
   check("a file row maps to itself", paired[file_to] == parse.rows[file_at])
 end
 
+print("== syntax ==")
+do
+  local syntax = require("thurbox-code-review.lib.syntax")
+
+  eq("lua comments are --", syntax.lang_for("a/b/c.lua").line_comment, "--")
+  eq("python comments are #", syntax.lang_for("x.py").line_comment, "#")
+  eq("rust comments are //", syntax.lang_for("x.rs").line_comment, "//")
+  eq("an extensionless name still resolves", syntax.lang_for("Dockerfile").line_comment, "#")
+  eq("and an unknown one falls back", syntax.lang_for("x.zzz").line_comment, "//")
+
+  local lua = syntax.lang_for("x.lua")
+  local function classify(text, lang)
+    local out = {}
+    for _, span in ipairs(syntax.spans(text, lang or lua)) do
+      out[#out + 1] = span.class .. ":" .. text:sub(span.from, span.to)
+    end
+    return table.concat(out, "|")
+  end
+
+  eq("a keyword", classify("local x"), "keyword:local|plain: |plain:x")
+  eq("a number", classify("42"), "number:42")
+  eq("a decimal is one number", classify("3.14"), "number:3.14")
+  eq("a string", classify('"hi"'), 'string:"hi"')
+  eq("an escaped quote does not end it", classify('"a\\"b"'), 'string:"a\\"b"')
+  eq("a capitalised word is a type", classify("Foo"), "type:Foo")
+  eq("a lua comment", classify("-- note"), "comment:-- note")
+  check(
+    "and `--` is NOT a comment in rust",
+    classify("-- note", syntax.lang_for("x.rs")):find("comment") == nil
+  )
+
+  -- Every span must cover the text exactly once, in order: a lexer that drops a
+  -- character silently shortens a line, and a line that is short by one walks
+  -- every column after it.
+  local function covers(text, lang)
+    local at = 1
+    for _, span in ipairs(syntax.spans(text, lang or lua)) do
+      if span.from ~= at then
+        return false, ("gap or overlap at %d (span starts %d)"):format(at, span.from)
+      end
+      at = span.to + 1
+    end
+    return at == #text + 1, ("covered %d of %d bytes"):format(at - 1, #text)
+  end
+  for _, sample in ipairs({
+    "local function greet(name) -- hi",
+    'return "a" .. b .. 42',
+    "  if Foo.bar ~= nil then",
+    "",
+    "     ",
+    "Rosé Piné ── ╭╮ é",
+    '"unterminated',
+    "x = 'it\\'s'",
+    "###",
+    "a//b",
+  }) do
+    local ok, why = covers(sample)
+    check("covers " .. string.format("%q", sample), ok, why)
+  end
+
+  -- utf8 safety: the spans are byte offsets, and slicing at one must never cut
+  -- a character in half. Re-joining the slices has to give the original back.
+  local text = 'local s = "Rosé ── ╭╮" -- é'
+  local joined = {}
+  for _, span in ipairs(syntax.spans(text, lua)) do
+    joined[#joined + 1] = text:sub(span.from, span.to)
+  end
+  eq("re-joining the spans gives the line back", table.concat(joined), text)
+  check(
+    "and every slice is valid utf8",
+    (function()
+      for _, piece in ipairs(joined) do
+        if not utf8.len(piece) then
+          return false
+        end
+      end
+      return true
+    end)()
+  )
+end
+
 print("== the epoch invalidates ==")
 do
   local a = lines_of("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,1 +1,1 @@\n+one")

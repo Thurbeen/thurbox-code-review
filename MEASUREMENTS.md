@@ -102,3 +102,21 @@ property of the repository, not of the commands.
 That correction is the useful half: a measurement taken on a synthetic fixture
 answers a question about that fixture. It was right about the *shape* — listing
 is far cheaper than patching — and wrong about the magnitude by roughly 4x.
+
+## What syntax highlighting costs
+
+Per VISIBLE line, so bounded by the pane's height and not by the diff. Measured
+over 20 frames against the capped diff, with the lexer off and on:
+
+| shape | off | on | added per frame |
+|---|---|---|---|
+| 120x40 | 3 batches | 13 | **0.50** |
+| 200x60 | 5 batches | 20 | **0.75** |
+
+Three quarters of one batch is 75,000 instructions — about 0.4% of the 200 the
+kernel allows a call. It does not grow with the diff, because the window only
+ever hands the lexer the forty-odd lines it is about to paint.
+
+That is the number behind the design's claim that highlighting is "a property of
+the cells the plugin produces". It is not merely possible without a kernel
+change; it is cheap enough that the question never comes up.

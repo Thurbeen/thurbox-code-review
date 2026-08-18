@@ -112,6 +112,19 @@ Colour is roles only — `diff_added`, `diff_removed`, `diff_added_bg`,
 `diff_removed_bg`, `branch_name`, `selection_*` — so the pane is themed by all
 36 presets, and by any theme you wrote, without this file knowing they exist.
 
+**The code is coloured too**, by a small language-agnostic lexer in
+`lib/syntax.lua` — comments, strings, numbers, keywords and capitalised names.
+With it on, the add/remove signal moves entirely to the **sign column and the
+row's background tint** and the foreground belongs to the code, because a line
+cannot carry two meanings in one colour. It costs about 0.75 of one instruction
+batch per frame and does not grow with the diff, since only the visible lines are
+ever lexed. Turn it off in `Ctrl+,` → Plugins.
+
+There is no syntax palette to draw on — no `syntax_keyword` — so the classes
+borrow roles that already exist, mapped exactly as v1 mapped them. The cost of
+that is real and worth knowing: on a theme where `branch_name` and `diff_added`
+resolve to the same colour, a string inside an added line matches its `+` sign.
+
 The parser is **incremental**: it reads a bounded number of lines per frame and
 the pane draws what exists so far. `MEASUREMENTS.md` records why, and what was
 measured to pick the number.

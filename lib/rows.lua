@@ -17,6 +17,8 @@
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
+local syntax = require("thurbox-code-review.lib.syntax")
+
 local M = {}
 
 -- ── utf8-safe slicing ───────────────────────────────────────────────────────
@@ -134,6 +136,38 @@ local function runs_for(text, style, query, hit_style)
     runs[#runs + 1] = { text = string.sub(text, at), style = style }
   end
   return runs
+end
+
+--- The code half of a body line: syntax first, then the search match over it.
+---
+--- Order matters and it is this way round: syntax is a property of the text and
+--- the match is a property of what you asked for, so the match WINS on the
+--- characters it covers. The other way, a keyword inside a match would keep its
+--- own colour and the match would look like it had a hole in it.
+---
+--- With no lang (highlighting off) this is exactly the single-colour path it
+--- replaced, so the diff's own green and red are what a reader sees.
+local function code_runs(text, base, opts, hit_style)
+  local pieces
+  if opts.lang then
+    -- The add/remove signal has moved to the sign column and the row's tint, so
+    -- the foreground belongs to the code. A SELECTED row keeps the selection's
+    -- foreground instead: syntax colours over a selection background are
+    -- unreadable in a good third of the themes.
+    pieces = syntax.runs(text, opts.lang, base, opts.selected)
+  else
+    pieces = { { text = text, style = base } }
+  end
+  if not opts.query or opts.query == "" then
+    return pieces
+  end
+  local out = {}
+  for _, piece in ipairs(pieces) do
+    for _, run in ipairs(runs_for(piece.text, piece.style, opts.query, hit_style)) do
+      out[#out + 1] = run
+    end
+  end
+  return out
 end
 
 -- ── the gutter ──────────────────────────────────────────────────────────────
@@ -307,10 +341,10 @@ local function expand(into, row, opts)
       local text = slice(line.text or "", 1, body_w)
       for _, run in
         ipairs(
-          runs_for(
+          code_runs(
             text,
             { fg = fg, bg = bg, bold = selected or nil },
-            query,
+            { lang = opts.lang, query = query, selected = selected },
             selected and sel_style or hit_style
           )
         )
@@ -361,7 +395,16 @@ local function expand(into, row, opts)
       { text = continuation and " " or sign, style = sign_style },
       { text = " ", style = gutter_style },
     }
-    for _, run in ipairs(runs_for(chunk, body_style, query, selected and sel_style or hit_style)) do
+    for _, run in
+      ipairs(
+        code_runs(
+          chunk,
+          body_style,
+          { lang = opts.lang, query = query, selected = selected },
+          selected and sel_style or hit_style
+        )
+      )
+    do
       runs[#runs + 1] = run
     end
     local used = len(chunk)
@@ -447,6 +490,9 @@ function M.window(rows, first, opts)
         -- The unified rows a paired row points into. Forwarded rather than read
         -- from a closure so `expand` stays a pure function of what it is handed.
         canonical = opts.canonical,
+        -- Per ROW, because a diff spans files and its languages with them. Nil
+        -- when highlighting is off, which is the whole switch.
+        lang = opts.lang_of and opts.lang_of(row) or nil,
         selected = at == selected,
       })
       for _ = 1, produced do

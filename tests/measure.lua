@@ -127,6 +127,53 @@ for _, shape in ipairs({
   )
 end
 
+-- ── what syntax highlighting costs a frame ──────────────────────────────────
+--
+-- Per VISIBLE line, so bounded by the pane's height rather than by the diff.
+-- The interesting number is the difference, not the total.
+
+local syntax = require("thurbox-code-review.lib.syntax")
+for _, shape in ipairs({ { 120, 40 }, { 200, 60 } }) do
+  local opts_off = {
+    width = shape[1],
+    height = shape[2],
+    digits = digits,
+    wrap = false,
+    hscroll = 0,
+    reviewed = {},
+    canonical = parse.rows,
+    selected = math.floor(#parse.rows / 2),
+  }
+  local opts_on = {}
+  for k, v in pairs(opts_off) do
+    opts_on[k] = v
+  end
+  opts_on.lang_of = function(row)
+    return syntax.lang_of(parse, row.file)
+  end
+  local from = math.max(1, opts_off.selected - 5)
+  local off = cost(function()
+    for _ = 1, 20 do
+      rows.window(parse.rows, from, opts_off)
+    end
+  end)
+  local on = cost(function()
+    for _ = 1, 20 do
+      rows.window(parse.rows, from, opts_on)
+    end
+  end)
+  print(
+    string.format(
+      "  syntax %3dx%-3d -> %2d batches off, %2d on, over 20 frames (%.2f batches/frame added)",
+      shape[1],
+      shape[2],
+      off,
+      on,
+      (on - off) / 20
+    )
+  )
+end
+
 -- ── the steady-state frame: cache hit + window ──────────────────────────────
 
 local steady = cost(function()
