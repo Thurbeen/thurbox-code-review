@@ -79,3 +79,26 @@ costs one pass however many frames it takes.
 
 Neither was a bug you could see. Both were found by measuring the thing that had
 already been designed, which is the argument for measuring it.
+
+## Listing files without the patch, and a caution about these numbers
+
+Measured while arguing that the changed-files list should not be capped with the
+body. Same 22 MB synthetic diff, best of three:
+
+| | |
+|---|---|
+| `git diff` (full) | 84.8 ms, 22,130,000 bytes |
+| `git diff --numstat -M` | 44.5 ms, 12,000 bytes — 400 files, exact counts |
+| `git diff --name-status -M` | 2.1 ms, 9,600 bytes — 400 files, M/A/D/R |
+
+The kernel took that shape in `962aef7`. **Do not quote these as a ceiling.**
+Measured against thurbox's own 5.5 MB diff on the maintainer's machine the same
+two commands cost 190 ms and 138 ms — the fixture here is 400 near-identical
+files in one directory, which is close to the best case for git's rename
+detection and its diffstat. The trade holds either way (it is a worker, off the
+render path, against an expensive command that already ran), but the ratio is a
+property of the repository, not of the commands.
+
+That correction is the useful half: a measurement taken on a synthetic fixture
+answers a question about that fixture. It was right about the *shape* — listing
+is far cheaper than patching — and wrong about the magnitude by roughly 4x.

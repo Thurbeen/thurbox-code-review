@@ -442,9 +442,9 @@ end
 --- the diff — so each leaf carries the index it had there.
 local function file_tree(files)
   local order = {}
-  for index, file in ipairs(files) do
+  for _, file in ipairs(files) do
     local dir, name = string.match(file.path, "^(.*)/([^/]*)$")
-    order[#order + 1] = { index = index, file = file, dir = dir or "", name = name or file.path }
+    order[#order + 1] = { file = file, dir = dir or "", name = name or file.path }
   end
   table.sort(order, function(a, b)
     if a.dir ~= b.dir then
@@ -461,7 +461,7 @@ local function file_tree(files)
       end
       previous = entry.dir
     end
-    out[#out + 1] = { index = entry.index, file = entry.file, depth = entry.dir ~= "" and 1 or 0 }
+    out[#out + 1] = { file = entry.file, depth = entry.dir ~= "" and 1 or 0 }
   end
   return out
 end
@@ -484,7 +484,7 @@ local function files_pane(files, opts)
   local tree = file_tree(files)
   local here = nil
   for at, entry in ipairs(tree) do
-    if entry.index == opts.current then
+    if entry.file and entry.file.path == opts.current then
       here = at
     end
   end
@@ -508,7 +508,13 @@ local function files_pane(files, opts)
       }
     else
       local file = entry.file
-      local current = entry.index == opts.current
+      local current = file.path == opts.current
+      -- Is this file in the BODY, or only in the list? The kernel lists every
+      -- changed file and caps only the patch, so on a large diff there are rows
+      -- here with nothing behind them. Unknown until the parse finishes, and
+      -- clickable meanwhile — a click is deferred, not dropped.
+      local in_body = opts.covered[file.path] == true
+      local absent = opts.parsed and not in_body
       local mark = opts.reviewed[file.path] and "✓" or " "
       local counts = " +" .. file.added .. " -" .. file.removed
       local indent = string.rep(" ", entry.depth)
@@ -517,9 +523,15 @@ local function files_pane(files, opts)
       name = widgets.truncate(name, math.max(1, room))
       local head = indent .. mark .. " " .. file.status .. " "
       local text = rows.pad(head .. name .. counts, width)
-      local base = current
-          and { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
-        or { fg = theme.text }
+      local base
+      if current then
+        base = { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+      elseif absent then
+        -- Muted, because there is nothing to go to. The banner says how many.
+        base = { fg = theme.muted }
+      else
+        base = { fg = theme.text }
+      end
       local line
       if current then
         line = { { text = text, style = base } }
@@ -543,15 +555,23 @@ local function files_pane(files, opts)
         len = 1,
         -- Identity: what makes this a tree rather than more cells.
         --
-        -- EVERY row, including files the body parse has not reached yet. The
-        -- first version made an unreached row inert, on the reasoning that
-        -- there was no row to jump to — which is true and is the wrong answer:
-        -- the list is complete precisely so it can be navigated while the body
-        -- is still being read, and 38 of 40 dead rows is not "usable while
-        -- parsing". A click on one is remembered and honoured the moment the
-        -- parse reaches it (`wanted`, below).
-        id = "file:" .. entry.index,
-        role = "row",
+        -- By PATH, because the list and the body are two different lists now —
+        -- the kernel builds the first from `--numstat`, and this pane builds the
+        -- second from the capped body. An index into one means nothing in the
+        -- other, and on a capped diff they differ by hundreds of files.
+        --
+        -- EVERY row that could have a body is a target, including files the
+        -- parse has not reached yet. The first version made an unreached row
+        -- inert, on the reasoning that there was no row to jump to — true, and
+        -- the wrong answer: the list is complete precisely so it can be
+        -- navigated while the body is still being read. A click on one is
+        -- remembered and honoured the moment the parse reaches it (`wanted`).
+        --
+        -- A file the finished parse never produced is the one case where the row
+        -- really has nowhere to go, and it is drawn muted rather than left to
+        -- look clickable.
+        id = (not absent) and ("file:" .. file.path) or nil,
+        role = (not absent) and "row" or nil,
         text = { line },
       }
     end
@@ -592,23 +612,34 @@ local function find_bar(id, width, hits, at)
   }
 end
 
---- What the cap left out, as specifically as the kernel lets it be said.
+--- What the cap left out, as specifically as it can now be said.
 ---
---- `raw_bytes` is the diff's size before the cut, which is what turns "some
---- changes are not shown" into a number a reader can judge. The kernel
---- deliberately does not offer a FILE count, because counting them would mean
---- parsing the whole diff — which is the thing the cap exists to avoid — so the
---- notice talks in megabytes and not in files.
-local function truncation_notice(entry)
+--- In FILES first, because that is the question a reviewer scrolling the list is
+--- asking, and bytes second. Both halves arrived separately: `raw_bytes` gave the
+--- size before the cut, and then the kernel began listing files from `--numstat`
+--- independently of the body — so the list is whole while the patch is capped,
+--- and the difference between the two counts is exactly what is missing.
+---
+--- The file count needs a finished parse (it is a count of what the BODY holds),
+--- so until then this says bytes alone rather than a number that would keep
+--- changing.
+local function truncation_notice(entry, parse)
   local shown = 4 * 1024 * 1024
   local whole = entry.raw_bytes
-  if type(whole) ~= "number" or whole <= shown then
-    return "diff truncated at 4 MiB — some changes are not shown"
+  local size = ""
+  if type(whole) == "number" and whole > shown then
+    size = string.format(" (4.0 of %.1f MB)", whole / (1024 * 1024))
   end
-  return string.format(
-    "diff truncated: showing 4.0 MB of %.1f MB — the rest is not here",
-    whole / (1024 * 1024)
-  )
+  local listed = #(entry.files or {})
+  if parse.done and listed > #parse.files then
+    return string.format(
+      "the patch is capped: %d of %d changed files are shown%s",
+      #parse.files,
+      listed,
+      size
+    )
+  end
+  return "the patch is capped — some changes are not shown" .. size
 end
 
 -- ── the footer hint strip ───────────────────────────────────────────────────
@@ -713,17 +744,18 @@ local wanted = {}
 --- the user presses another key, which is a click that looks broken.
 --- Idempotent, so a second render in the same frame changes nothing.
 local function settle_jump(id, parse, move)
-  local index = wanted[id]
-  if not index then
+  local path = wanted[id]
+  if not path then
     return
   end
-  local row = diff.file_row(parse.rows, index)
+  local row = diff.file_row(parse.rows, path)
   if row then
     wanted[id] = nil
     move(row)
   elseif parse.done then
-    -- The parse finished without ever producing that file: it was past the
-    -- 4 MiB cut. Forget it rather than waiting forever.
+    -- The parse finished without ever producing that file: its patch was past
+    -- the cut. Forget it rather than waiting forever — the row is drawn muted
+    -- from here on, so the answer is on screen rather than only in this table.
     wanted[id] = nil
   end
 end
@@ -945,7 +977,8 @@ return {
     last_body_height[id] = body_h
 
     local at = math.min(cursor_of(id), math.max(1, #parse.rows))
-    local current_file = diff.file_of(parse.rows, at)
+    local current_path = diff.path_of(parse, at)
+    local covered = diff.covered(parse)
 
     local published_files = entry.files or {}
     local show_files = files_shown() and inner_w >= FILES_MIN_PANE and #published_files > 0
@@ -997,7 +1030,9 @@ return {
         files_pane(entry.files or {}, {
           width = files_w,
           height = body_h,
-          current = current_file,
+          current = current_path,
+          covered = covered,
+          parsed = parse.done,
           reviewed = reviewed,
         })
       )
@@ -1011,7 +1046,7 @@ return {
         text = {
           {
             {
-              text = rows.pad(" " .. truncation_notice(entry) .. " ", inner_w),
+              text = rows.pad(" " .. truncation_notice(entry, parse) .. " ", inner_w),
               style = { fg = theme.role("inverted_fg"), bg = theme.bad, bold = true },
             },
           },
@@ -1085,8 +1120,8 @@ return {
   end,
 
   on_click = function(hit)
-    local index = hit.id and string.match(hit.id, "^file:([0-9]+)$")
-    if not index then
+    local path = hit.id and string.match(hit.id, "^file:(.+)$")
+    if not path then
       return false
     end
     local session = selected()
@@ -1098,14 +1133,13 @@ return {
       return false
     end
     local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
-    local at = tonumber(index)
-    local row = diff.file_row(parse.rows, at)
+    local row = diff.file_row(parse.rows, path)
     if row then
       move_to(session.id, parse, row)
     else
       -- The list is the kernel's and is complete; the body is this pane's and is
       -- not, yet. Remember the ask and let the parse deliver it.
-      wanted[session.id] = at
+      wanted[session.id] = path
     end
     return true
   end,
@@ -1264,10 +1298,9 @@ return {
       end
       move_to(id, parse, to)
     elseif action == "review.mark" then
-      local index = diff.file_of(parse.rows, at)
-      local file = index and parse.files[index]
-      if file then
-        toggle_mark(id, file.path)
+      local path = diff.path_of(parse, at)
+      if path then
+        toggle_mark(id, path)
       end
     elseif action == "review.send" then
       command("send", {

@@ -205,6 +205,28 @@ local function surface_cells(node)
   return found
 end
 
+--- The body line the cursor is on, found by its selection background.
+---
+--- The right oracle for "did the jump land": asking whether a file is the LAST
+--- line only works when the body overflows its window, and a short diff fits
+--- whole — so that assertion passed for the large fixture and failed for the
+--- small one while the pane was behaving identically in both.
+local function selected_line(node)
+  local want = roles.selection_bg
+  for _, line in ipairs(surface_cells(node) or {}) do
+    for _, run in ipairs(line) do
+      if run.style and run.style.bg == want then
+        local text = {}
+        for _, part in ipairs(line) do
+          text[#text + 1] = part.text or ""
+        end
+        return table.concat(text)
+      end
+    end
+  end
+  return nil
+end
+
 local function ids(node)
   local out = {}
   walk(node, function(item)
@@ -303,7 +325,7 @@ do
   snapshot(ready(3, 5))
   local found = ids(render())
   eq("one id per file", #found, 3)
-  eq("named by index", found[1], "file:1")
+  eq("named by path, not by index", found[1], "file:pkg/file1.txt")
 end
 
 print("== the footer offers the pane's keys once a diff is on screen ==")
@@ -360,7 +382,7 @@ do
   for _, id in ipairs(ids(first)) do
     targets[id] = true
   end
-  check("including one past the parse", targets["file:30"] == true)
+  check("including one past the parse", targets["file:pkg/file30.txt"] == true)
 
   -- And the footer is the working one: a part-read diff is still navigable.
   has("the keys are offered while reading", drawn, "j/k")
@@ -368,11 +390,12 @@ do
   -- A click on a file the parse has not reached is DEFERRED, not dropped: the
   -- frame that reaches the file is the frame that lands on it. The first
   -- version made those rows inert instead, which is honest and useless.
-  check("clicking an unreached file is accepted", plugin.on_click({ id = "file:30", role = "row" }))
-  -- Asserted on the BODY's last line, not on the file list (which names every
-  -- file whether or not the cursor is there) and not by re-parsing here: the
-  -- window puts the selection at the bottom, so the cursor arriving on file 30's
-  -- header is that header becoming the last line the surface is handed.
+  check(
+    "clicking an unreached file is accepted",
+    plugin.on_click({ id = "file:pkg/file30.txt", role = "row" })
+  )
+  -- Asserted on the SELECTED body line, not on the file list (which names every
+  -- file whether or not the cursor is there) and not by re-parsing here.
   --
   -- Calling `diff.parse` from the test to check the row index is what NOT to do:
   -- the epoch is the plugin's, so guessing it forks the cache and the two parses
@@ -380,12 +403,7 @@ do
   -- is the oracle.
   local landed = false
   for _ = 1, 400 do
-    local body = surface_cells(render()) or {}
-    local text = {}
-    for _, run in ipairs(body[#body] or {}) do
-      text[#text + 1] = run.text or ""
-    end
-    if table.concat(text):find("file30.txt", 1, true) then
+    if (selected_line(render()) or ""):find("file30.txt", 1, true) then
       landed = true
       break
     end
@@ -399,11 +417,52 @@ end
 print("== truncation names what is missing ==")
 do
   snapshot(ready(2, 5, { truncated = true, raw_bytes = 21 * 1024 * 1024 }))
-  local drawn = joined(render())
-  has("it says how much is shown", drawn, "4.0 MB of 21.0 MB")
+  has("it says the size that was cut", joined(render()), "4.0 of 21.0 MB")
 
   snapshot(ready(2, 5, { truncated = true }))
   has("and degrades without raw_bytes", joined(render()), "some changes are not shown")
+end
+
+print("== the list and the body are two lists now ==")
+do
+  -- Since the kernel began deriving `files` from `--numstat` rather than from
+  -- the body, a capped diff lists files whose patch is not there. Index `n` in
+  -- one is not index `n` in the other, and the pane has to survive that.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+
+  local entry = ready(3, 5)
+  -- Three files listed; the body carries only the first two, as a cut would
+  -- leave it. Deliberately listed OUT of the body's order too, so an index join
+  -- would land on the wrong file rather than merely fail.
+  entry.body = body_of(2, 5)
+  entry.files = {
+    { path = "pkg/file3.txt", added = 5, removed = 5, status = "M" },
+    { path = "pkg/file1.txt", added = 5, removed = 5, status = "M" },
+    { path = "pkg/file2.txt", added = 5, removed = 5, status = "A" },
+  }
+  entry.truncated = true
+  entry.raw_bytes = 9 * 1024 * 1024
+  snapshot(entry)
+
+  local tree = render()
+  local drawn = joined(tree)
+  has("every listed file is shown", drawn, "file3.txt")
+  has("the banner counts files, not only bytes", drawn, "2 of 3 changed files are shown")
+
+  local targets = {}
+  for _, id in ipairs(ids(tree)) do
+    targets[id] = true
+  end
+  check("a file the body carries is clickable", targets["file:pkg/file1.txt"] == true)
+  check("a file it does not carry is not", targets["file:pkg/file3.txt"] ~= true)
+
+  -- The join that matters: clicking the SECOND row must reach the file that row
+  -- names, not the second file of the body.
+  check("clicking is by path", plugin.on_click({ id = "file:pkg/file2.txt", role = "row" }))
+  has("and lands on the file that was named", selected_line(render()) or "", "file2.txt")
+
+  diff.forget("s1")
 end
 
 print("== no session ==")

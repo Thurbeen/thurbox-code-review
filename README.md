@@ -42,8 +42,9 @@ worker. Nothing to trust, nothing to grant.
 
 It needs a v2 plugin kernel from 2026-08-18 or later: `store.selected`-driven
 diffs and `base_branch` on the session row (`5c7be55`), `status` / `old_path` /
-`raw_bytes` on a published diff (`cf06886`), and `command("focus", { toggle })`
-(`feaca48`).
+`raw_bytes` on a published diff (`cf06886`), `command("focus", { toggle })`
+(`feaca48`), and a file list built independently of the capped body (`962aef7`) —
+which the pane relies on, since it joins the list to the body **by path**.
 
 ## Keys
 
@@ -113,7 +114,7 @@ must be distinguishable:
 | `pending` | `⠦ Building diff…` + the range, animated |
 | `failed` | the kernel's own reason, in the `danger` role |
 | `ready`, no files | a **static** `No changes` + the range that was diffed |
-| `truncated` | a banner naming what is missing — "showing 4.0 MB of 21.1 MB" |
+| `truncated` | a banner counting what is missing — "77 of 400 changed files are shown (4.0 of 21.1 MB)" |
 
 The first two move and the fourth does not, which is what the eye actually
 reads. A slow diff must never look like a clean worktree.
@@ -128,11 +129,18 @@ Lua and there is no command to write one. So `c` and `s` are declared, appear in
 `state`, which survives a reload and **not** a restart; the footer calls them
 "seen" rather than "reviewed" for that reason.
 
-`KERNEL-GAPS.md` states the exact read and command that would close it, and four
-smaller gaps ranked by what using the pane actually made me want — including one
-worth knowing as a **reader**: the changed-files list is derived from the capped
-body, so on a diff past 4 MiB it lists only the files that fit. On a 400-file test
-repository that is 76 of 400, with nothing on screen to say so.
+**The changed-files list cannot be scrolled past the patch.** The kernel lists
+every changed file and caps only the patch, so on a large diff the list is
+complete while the body is not — the banner says so ("the patch is capped: 77 of
+400 changed files are shown"). But the list's viewport follows the body's cursor,
+and the body stops at the cap, so files far beyond it are named in the data and
+cannot be brought on screen. Fixing it means giving the list a cursor of its own,
+which is v1's model and this pane's next piece of work rather than a tweak. Files
+whose patch was cut are drawn muted and are not click targets, so the pane never
+offers a jump it cannot make.
+
+`KERNEL-GAPS.md` states the exact read and command that would close comments, and
+the smaller gaps ranked by what using the pane actually made me want.
 
 ## Developing
 

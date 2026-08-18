@@ -7,7 +7,7 @@ patch someone could write rather than a wish. None of them is made here: a
 kernel change is not a plugin's to make unasked, and faking one in `state` would
 look like it worked.
 
-Written against the v2 plugin kernel at `feaca48`.
+Written against the v2 plugin kernel at `962aef7`.
 
 ---
 
@@ -76,39 +76,7 @@ anywhere else. So `c` and `s` are declared, listed in `F1`, and say this.
 
 ---
 
-## 2. The file list is silently truncated with the body
-
-`files` is derived from the **capped** body, so it lists only the files whose
-patch fit inside 4 MiB. On a 400-file test repository the pane shows **76 of 400
-files**, and totals of `+30610 -30800` where the real ones are ~160,000 each.
-`raw_bytes` lets the banner say "4.0 of 21.1 MB", which is about bytes; nothing
-says that 81% of the changed files are missing from the *navigation aid*. A
-reviewer scrolling the list has no way to know it ends early.
-
-The objection to a file count is that counting would mean parsing the whole diff,
-which is what the cap exists to avoid. That is true of the diff **text** and not
-of the file **list**: git hands over the whole list without the patch, cheaply.
-Measured on that 22 MB diff, best of three:
-
-    git diff (full)            84.8 ms    22,130,000 bytes
-    git diff --numstat -M      44.5 ms        12,000 bytes   400 files, exact counts
-    git diff --name-status -M   2.1 ms         9,600 bytes   400 files, M/A/D/R
-
-So: **derive `files` from `--numstat -M` + `--name-status -M`, and cap only
-`body`.** The list is then always complete and exact, the body stays bounded,
-`truncated` keeps meaning what it means, and a pane's header counts stop being a
-fraction of the truth. ~45 ms on a worker already spending 85, and 12 KB where
-the body is 4 MiB.
-
-It also removes something this pane currently relies on and would rather not:
-`files[n]` and the body parse's `files[n]` are the same file only because both
-come from one `parse_unified_diff` over the same bytes. Sourced separately they
-would not be — so the pane should key on **path**, which is what a comment anchor
-will have to do anyway.
-
----
-
-## 3. A plugin cannot put text on the clipboard
+## 2. A plugin cannot put text on the clipboard
 
 v1's `y` copied the review as markdown. `Command::Copy` takes `{ session }` and
 copies **that session's terminal**, so there is no spelling of "copy this text"
@@ -130,7 +98,7 @@ from Lua is missing.
 
 ---
 
-## 4. Nothing says how old a diff is
+## 3. Nothing says how old a diff is
 
 Real, and realer since `command("diff", …)` exists: after a refresh there is no
 way to tell that anything happened, because the diff usually comes back identical
@@ -142,7 +110,7 @@ A nicety, not a blocker.
 
 ---
 
-## 5. `thurbox.diffs` publishes one target per session
+## 4. `thurbox.diffs` publishes one target per session
 
 v1's `t` opened a picker: all branch changes (`base..HEAD`), working changes
 (uncommitted), or a single commit. Every git function it needs is still present
@@ -179,7 +147,7 @@ something I would go to `git` for. It is also the largest of these to build.
 
 ---
 
-## 6. Small: the two v1 chords are still asserted unbound
+## 5. Small: the two v1 chords are still asserted unbound
 
 `tests/v2_keymap.rs` lists `ctrl+x` and `f7` in `CHORDS_AWAITING_THEIR_PANE` and
 asserts they resolve to nothing, "until that pane is back". This pane claims both.
@@ -223,6 +191,20 @@ Three more, asked for after building against the published shape and fixed in
   published now, so the banner says "showing 4.0 MB of 21.1 MB" instead of "some
   changes are not shown". The file *count* is deliberately not offered: counting
   them would mean parsing the whole diff, which is what the cap exists to avoid.
+- **the file list was capped along with the body.** `files` was derived from the
+  capped text, so a diff past 4 MiB listed only the files whose patch fit — 310
+  of 433 on thurbox's own diff, 77 of 400 on a synthetic one, with totals to
+  match and nothing on screen to say so. `raw_bytes` had made the banner honest
+  about bytes while the list stayed quietly short, which answers a different
+  question than the one a reviewer scrolling a list is asking. `files` now comes
+  from `--numstat -M -z` plus `--name-status -M -z`, joined on the new path, and
+  only `body` is capped.
+
+  Two consequences for this pane, both handled: the list and the body are **two
+  different lists** now, so every join between them is by PATH rather than by
+  index — an index into one means nothing in the other, and on a capped diff they
+  differ by hundreds. And a listed file whose patch was cut is drawn muted and is
+  not a click target, because it is the one row that genuinely has nowhere to go.
 - **a pane in a switch slot could be entered and not left.** `command("focus",
   { toggle = true })` returns to wherever focus came from, using the same memory
   `Esc` reads. This pane had shipped the `Esc`-to-a-named-sibling version, which

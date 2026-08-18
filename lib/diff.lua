@@ -372,15 +372,40 @@ end
 -- Every one of these is an index into `rows`. Nothing here knows that a row can
 -- occupy more than one line on screen, which is the point.
 
---- The first row of file `index`, or nil.
-function M.file_row(rows, index)
+--- The first row of the file at `path`, or nil when the body does not carry it.
+---
+--- Keyed on the PATH, not on an index. The two file lists in play — the kernel's
+--- (from `--numstat`/`--name-status`, complete) and this parse's (from the
+--- capped body) — used to come from one parse over one set of bytes, so index
+--- `n` meant the same file in both. Since the kernel began listing files
+--- independently of the body that is no longer true, and a capped diff makes
+--- them disagree by hundreds. The path is the only join that survives, which is
+--- also the join a comment anchor needs.
+function M.file_row(rows, path)
   for at = 1, #rows do
     local row = rows[at]
-    if row.kind == "file" and row.file == index then
+    if row.kind == "file" and row.path == path then
       return at
     end
   end
   return nil
+end
+
+--- The paths the body actually carries, as a set.
+---
+--- A capped body holds fewer files than the list beside it, and the difference
+--- is not an error — it is what `truncated` means, now that the list is whole.
+--- Computed once per finished parse.
+function M.covered(parse)
+  if parse.covered and parse.covered_at == parse.at then
+    return parse.covered
+  end
+  local set = {}
+  for _, file in ipairs(parse.files) do
+    set[file.path] = true
+  end
+  parse.covered, parse.covered_at = set, parse.at
+  return set
 end
 
 --- The next row at or after `from` whose kind is in `kinds`, searching in
@@ -398,11 +423,15 @@ function M.jump(rows, from, kinds, direction)
   return nil
 end
 
---- The file a row belongs to, for the changed-files highlight. `nil` for rows
---- that belong to no file (the informational ones).
-function M.file_of(rows, at)
-  local row = rows[at]
-  return row and row.file or nil
+--- The PATH of the file a row belongs to, for the changed-files highlight.
+--- `nil` for rows that belong to no file (the informational ones).
+---
+--- A path rather than an index, for the reason `file_row` takes one: the list
+--- this highlight is drawn in is not the list these rows were built from.
+function M.path_of(parse, at)
+  local row = parse.rows[at]
+  local file = row and row.file and parse.files[row.file]
+  return file and file.path or nil
 end
 
 return M
