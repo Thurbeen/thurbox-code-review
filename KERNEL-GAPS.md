@@ -224,7 +224,85 @@ listing half exists.
 
 ---
 
-## 7. Small: the two v1 chords are still asserted unbound
+## 7. `Ctrl+H` / `Ctrl+L` stop on a pane that is not on screen
+
+The centre is a `switch` slot with two occupants — the agent and this pane — and
+one of them is drawn. The focus ring visits **both**:
+
+```text
+Ctrl+L -> Review      (which was not on screen, and now is)
+Ctrl+L -> Sessions
+Ctrl+L -> Agent
+Ctrl+L -> Review
+```
+
+Three stops for two visible panes, and the middle one is a pane the user did not
+ask for, brought forward by a key that means *move along*. Walking the ring
+changes what the centre is showing, so `Ctrl+L Ctrl+L Ctrl+L` does not get you
+back where you started — it gets you somewhere else, having displaced your
+terminal on the way. Captured in `tests/render-proof.sh`.
+
+**Why it happens, and why the obvious fix is wrong.** `focus::can_focus` admits a
+switch alternate *deliberately* — the module's own doc comment records the bug
+that made it so: refusing focus there left an alternate unreachable, because
+focusing one is exactly what brings it forward, which is how `F7` and a pill work.
+That must not change.
+
+The trouble is that `cycle_focus` asks the *same* question:
+
+```rust
+// src/main.rs, fn cycle_focus
+if focusable.get(next).is_some_and(|index| self.can_focus_plugin(*index))
+```
+
+There are two different questions here wearing one predicate. Focus somebody
+**asked for** may bring an alternate forward; focus that is merely **passing
+through** may not. `focus.rs` already has the stricter one — `is_drawn` — so the
+change is to name it and use it in the ring:
+
+```rust
+/// May the focus RING stop here?
+///
+/// Stricter than `can_focus`, and for a different question: `Ctrl+H`/`Ctrl+L`
+/// walk the panes that are ON SCREEN. `can_focus` stays permissive because
+/// focusing an alternate is what brings it forward — the distinction is between
+/// focus that was asked for and focus that is passing through.
+pub fn in_ring(placement: Placement) -> bool {
+    is_drawn(placement)
+}
+```
+
+```rust
+- .is_some_and(|index| self.can_focus_plugin(*index))
++ .is_some_and(|index| thurbox::kernel::focus::in_ring(self.placement(*index)))
+```
+
+with the test beside the two that are already there:
+
+```rust
+#[test]
+fn the_ring_walks_past_an_alternate_it_cannot_see() {
+    let it = placement(true, Some(false));
+    assert!(can_focus(it), "explicit focus still brings it forward");
+    assert!(!in_ring(it), "but Ctrl+L must not stop on a pane nobody can see");
+}
+```
+
+Nothing becomes unreachable: an alternate keeps its own chord and its pill, which
+is how it was reached before — `F7` here, `F11` for the plugins pane. And the ring
+becomes symmetric, which is the point: with a review showing it visits the review,
+with a terminal showing it visits the terminal, and either way it has two stops
+and does not change what is on screen.
+
+**This one cannot be worked around from a plugin.** A pane declares `focusable`,
+`slot`, `slot_mode`, `order` and `floats`, and none of them says "not in the
+ring". The only plugin-side approach — noticing on a render that focus arrived
+unasked and bouncing it onward — cannot tell `Ctrl+L` from a click or a pill, and
+would produce a pane that is unreachable down whichever path went untested.
+
+---
+
+## 8. Small: the two v1 chords are still asserted unbound
 
 `tests/v2_keymap.rs` lists `ctrl+x` and `f7` in `CHORDS_AWAITING_THEIR_PANE` and
 asserts they resolve to nothing, "until that pane is back". This pane claims both.

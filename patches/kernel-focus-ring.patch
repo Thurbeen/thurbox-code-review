@@ -1,0 +1,87 @@
+diff --git a/src/kernel/focus.rs b/src/kernel/focus.rs
+index 28f044e..2bc1939 100644
+--- a/src/kernel/focus.rs
++++ b/src/kernel/focus.rs
+@@ -73,6 +73,23 @@ pub fn can_focus(placement: Placement) -> bool {
+     placement.floats || placement.slot_placed
+ }
+ 
++/// May the focus RING stop here?
++///
++/// Stricter than [`can_focus`], and for a different question. `Ctrl+H`/`Ctrl+L`
++/// walk the panes that are ON SCREEN — so a ring that stopped on a switch
++/// alternate made the centre flip as you walked past it: three stops for two
++/// visible panes, and the pane you were not asking for brought forward by a key
++/// that means *move along*.
++///
++/// [`can_focus`] must stay permissive, because focusing an alternate is exactly
++/// what brings it forward and that is how `F7` and a pill work. The distinction
++/// is between focus somebody **asked for** and focus that is merely **passing
++/// through**; nothing becomes unreachable, because an alternate keeps its own
++/// chord.
++pub fn in_ring(placement: Placement) -> bool {
++    is_drawn(placement)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -115,6 +132,27 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn the_ring_walks_past_an_alternate_it_cannot_see() {
++        let it = placement(true, Some(false));
++        assert!(can_focus(it), "explicit focus still brings it forward");
++        assert!(!in_ring(it), "but Ctrl+L must not stop on a pane nobody can see");
++    }
++
++    #[test]
++    fn the_ring_stops_on_whichever_occupant_is_showing() {
++        assert!(in_ring(placement(true, Some(true))));
++        // Symmetric: it does not matter WHICH of the two is up.
++        assert!(!in_ring(placement(true, Some(false))));
++    }
++
++    #[test]
++    fn the_ring_does_not_stop_on_a_closed_float() {
++        assert!(can_focus(float(false)), "a float may be focused open");
++        assert!(!in_ring(float(false)), "but walking past must not open one");
++        assert!(in_ring(float(true)));
++    }
++
+     #[test]
+     fn a_slot_the_arrangement_did_not_place_takes_neither() {
+         // A closed column: nothing brings it forward, so focus really would
+diff --git a/src/main.rs b/src/main.rs
+index a950b61..1f0ca49 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -3478,9 +3478,12 @@ impl App {
+         // arrangement), leave focus where it was rather than spinning.
+         for hop in 1..=count {
+             let next = (self.focus as isize + step * hop).rem_euclid(count) as usize;
++            // `in_ring`, not `can_focus`: the guard that stops focus stranding
++            // must admit a switch alternate, because focusing one is what brings
++            // it forward. Walking past one must not.
+             if focusable
+                 .get(next)
+-                .is_some_and(|index| self.can_focus_plugin(*index))
++                .is_some_and(|index| self.in_focus_ring(*index))
+             {
+                 self.focus = next;
+                 return;
+@@ -3529,6 +3532,12 @@ impl App {
+         thurbox::kernel::focus::can_focus(self.placement(index))
+     }
+ 
++    /// May the focus ring stop on this plugin? Stricter than
++    /// [`Self::can_focus_plugin`] — see `kernel::focus::in_ring`.
++    fn in_focus_ring(&self, index: usize) -> bool {
++        thurbox::kernel::focus::in_ring(self.placement(index))
++    }
++
+     /// Plugins may have come and gone under us; focus must land on one that
+     /// still exists.
+     fn clamp_focus(&mut self) {

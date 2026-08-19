@@ -269,6 +269,59 @@ send C-h;    expect_focus Sessions "back to the list"
 send F7;     expect_focus Review   "F7 in from the list again"
 send Escape; expect_focus Agent    "Esc lands on the agent too"
 
+# ── the focus RING ──────────────────────────────────────────────────────────
+#
+# `Ctrl+H` / `Ctrl+L` walk the panes. This pane shares the centre `switch` slot
+# with the agent, and exactly one of the two is on screen — so the ring should
+# have TWO stops, not three, and walking it should never bring forward the pane
+# you did not ask for.
+#
+# It has three. `kernel::focus::can_focus` admits a switch alternate on purpose
+# (focusing one is what makes it drawn, which is how `F7` and the pill work), and
+# `cycle_focus` asks the same question — so `Ctrl+L` from the agent lands on the
+# review and displaces it. KERNEL-GAPS.md §7 has the fix.
+#
+# Reported rather than asserted, because the ring is the kernel's and a red test
+# here would be reporting someone else's schedule as this pane's failure. It goes
+# quiet on its own the day the ring is fixed.
+ring() {
+  local out=""
+  for _ in 1 2 3; do
+    send C-l
+    sleep 0.6
+    out="$out $(focused)"
+  done
+  printf '%s' "${out# }"
+}
+
+log "the focus ring, from the agent"
+FROM_AGENT="$(ring)"
+log "  Ctrl+L x3 -> $FROM_AGENT"
+if [ "$FROM_AGENT" = "Sessions Agent Sessions" ]; then
+  log "  the ring walks past the pane it cannot see"
+else
+  log "  PENDING KERNEL: want 'Sessions Agent Sessions', got '$FROM_AGENT' (KERNEL-GAPS 7)"
+fi
+
+# Leave focus somewhere KNOWN, by ASKING rather than by counting hops. The first
+# version of this probe assumed where the walk ended, and every capture after it
+# was of the agent — twenty shots that proved nothing, quietly. The count it
+# assumed is also the very thing under test here, so it was guaranteed to be
+# wrong on exactly one side of the fix.
+settle_on() {
+  local want="$1"
+  for _ in 1 2 3 4 5 6; do
+    if [ "$(focused)" = "$want" ]; then
+      log "  settled on $want"
+      return 0
+    fi
+    send C-l
+    sleep 0.5
+  done
+  die "could not settle focus on $want (it is $(focused))"
+}
+settle_on Agent
+
 send F7
 shot 01-review
 

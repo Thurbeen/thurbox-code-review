@@ -140,6 +140,24 @@ Two sources for one diff is a real cost and the pane does not pretend otherwise:
 `KERNEL-GAPS.md` §4 has the shape a kernel-side `DiffStore` keyed on
 `(session, target)` would take, and what it would fix that this cannot.
 
+## One thing that is not right yet, and is not this pane's to fix
+
+`Ctrl+H` / `Ctrl+L` stop on this pane **even when the agent's terminal is the one
+on screen** — three stops for two visible panes, and walking past displaces your
+terminal. It should behave exactly as the terminal does: the ring visits whichever
+occupant of the centre is showing, and changes nothing by passing through.
+
+That is `cycle_focus` asking `focus::can_focus`, which admits a switch alternate
+on purpose (focusing one is what brings it forward — that is how `F7` works). A
+plugin declares `focusable`, `slot`, `slot_mode`, `order` and `floats`, and none
+of them says "not in the ring", so there is nothing to do here.
+
+`KERNEL-GAPS.md` §7 has the reasoning and `patches/kernel-focus-ring.patch` has
+the fix — three lines and three tests, compiled, and proved end to end: with it
+applied the ring is `Sessions → Agent → Sessions` and every `F7` round trip still
+works. `tests/render-proof.sh` prints the ring it observed and says `PENDING
+KERNEL` until the fix lands.
+
 ## The one rule
 
 **One logical diff row is one selectable unit.** Wrapping expands *visual* rows
