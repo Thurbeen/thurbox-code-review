@@ -23,7 +23,7 @@ first consumer of `thurbox.diffs` anywhere.
 ## Install
 
 ```bash
-thurbox-cli plugin install git+https://github.com/<you>/thurbox-code-review
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
 ```
 
 **No `layout.lua` edit.** The pane occupies the `center` switch slot beside the
@@ -236,4 +236,9 @@ decisions.
 
 Both scripts write only under `$XDG_CACHE_HOME` and a temp directory; nothing
 generated lands in this working copy, because a dirty tree is what makes
-`plugin update` refuse to move.
+`plugin update` refuse to move. That is also why there is no `.gitignore`: there
+is nothing this repository generates for one to cover.
+
+## Licence
+
+MIT. See `LICENSE`.

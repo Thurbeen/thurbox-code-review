@@ -1,0 +1,31 @@
+# The code-review pane.
+#
+# This plugin is several files — a pane and the modules it requires — so it is
+# installed by CLONING it:
+#
+#     thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+#
+# The clone lands at `<interface dir>/thurbox-code-review/`, keeps its `.git` (so
+# `update` is a fetch and your edits are protected), and `pane.source` below names
+# the entry point inside it. Failing a manifest, install takes the single `.lua`
+# under `plugins/` — which would work here, since there is exactly one, but then
+# nothing would carry the name, the version or what it needs.
+#
+# The modules are NOT listed as `[[module]]`. That list is for the file-by-file
+# delivery path, which copies each file to a destination in the interface
+# directory; a cloned repository already has its own directory and the pane
+# reaches its modules inside it (`require("thurbox-code-review.lib.diff")`).
+#
+# Nothing is fetched or built at install time and no capability is asked for:
+# everything the pane draws comes from `thurbox.diffs`, which the kernel computes
+# on a worker. See the README.
+name = "code-review"
+description = "The diff of a session's worktree against its base branch, reviewable in the TUI"
+version = "v0.1.0"
+
+# The kernel reads this pane needs: `store.selected`-driven diffs with
+# `base_branch` on the session row, a file list built independently of the capped
+# body, and `command("focus", { toggle })`. All of them are v2 plugin-kernel.
+requires_thurbox = ">=2.0"
+
+pane = { source = "plugins/40_review.lua", path = "plugins/40_review.lua" }
