@@ -17,6 +17,7 @@
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
+local notes = require("thurbox-code-review.lib.notes")
 local syntax = require("thurbox-code-review.lib.syntax")
 
 local M = {}
@@ -92,6 +93,23 @@ local function side_bg(side)
   end
   return nil
 end
+
+--- Colour for a note's classification badge. v1's `class_color`.
+---
+--- Borrowed roles again, and the same reasoning as syntax: there is no
+--- `review_issue` in the palette and adding four would be a kernel change for
+--- one pane. These four already mean what the badges mean.
+local function class_fg(class)
+  if class == "issue" then
+    return role("danger")
+  elseif class == "suggestion" then
+    return role("accent")
+  elseif class == "praise" then
+    return role("status_done")
+  end
+  return role("text_secondary")
+end
+M.class_fg = class_fg
 
 local function status_fg(status)
   if status == "A" then
@@ -212,6 +230,11 @@ local SIGN = { add = "+", del = "-", ctx = " " }
 --- The body text of a row, as it would appear with no folding: what find
 --- matches against, and what `send`-to-agent quotes.
 function M.text_of(row, canonical)
+  if row.kind == "note" then
+    -- The body only. The badge is chrome, and a search for "issue" should not
+    -- match every note you classified as one.
+    return row.note and row.note.text or ""
+  end
   if row.kind == "pair" then
     -- Both halves, so a search finds a word on either side of the screen. The
     -- two are the same string for a context line, which pairs with itself.
@@ -275,6 +298,33 @@ local function expand(into, row, opts)
         { text = slice(kept, len(mark) + 1, len(head)), style = { fg = status_fg(row.status) } },
         { text = slice(kept, len(head) + 1, upto), style = base },
         { text = slice(kept, upto + 1, width), style = { fg = role("text_muted") } },
+      }
+    end
+    return 1
+  end
+
+  -- A note: an indented block under the line it is about, badged with its
+  -- classification. One logical row per note, like everything else here, which
+  -- is what lets `↵` edit one and `x` delete one without either knowing where it
+  -- landed on screen.
+  if row.kind == "note" then
+    local note = row.note or {}
+    local badge = "[" .. (notes.LABEL[note.class] or "Note") .. "] "
+    local indent = string.rep(" ", math.min(opts.digits * 2 + 3, math.max(0, width - 8)))
+    local marker = "▌ "
+    local base = selected and sel_style or { fg = role("text_secondary") }
+    local text = pad(indent .. marker .. badge .. (note.text or ""), width)
+    if selected then
+      into[#into + 1] = { { text = text, style = sel_style } }
+    else
+      local upto = len(indent) + len(marker) + len(badge)
+      into[#into + 1] = {
+        { text = slice(text, 1, len(indent)), style = base },
+        {
+          text = slice(text, len(indent) + 1, upto),
+          style = { fg = class_fg(note.class), bold = true },
+        },
+        { text = slice(text, upto + 1, width), style = base },
       }
     end
     return 1

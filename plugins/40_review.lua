@@ -48,6 +48,8 @@ local widgets = require("lib.widgets")
 local diff = require("thurbox-code-review.lib.diff")
 local rows = require("thurbox-code-review.lib.rows")
 local export = require("thurbox-code-review.lib.export")
+local notes = require("thurbox-code-review.lib.notes")
+local textinput = require("lib.textinput")
 local syntax = require("thurbox-code-review.lib.syntax")
 
 --- What this pane is called: the focus ring, `command("focus", …)`, and the
@@ -213,6 +215,25 @@ local function set_hscroll(id, at)
   state["hscroll:" .. id] = at > 0 and at or nil
 end
 
+-- ── composing a note ────────────────────────────────────────────────────────
+--
+-- One field, held in `state` so a reload (F10) does not lose what you have
+-- typed — which is the reason `lib.textinput` keeps a field as a plain table.
+-- `editing` carries the id when an existing note is being changed rather than a
+-- new one written.
+
+local function compose_of(id)
+  return state["compose:" .. id]
+end
+
+local function set_compose(id, value)
+  state["compose:" .. id] = value
+end
+
+local function composing(id)
+  return id ~= nil and compose_of(id) ~= nil
+end
+
 --- Where the changed-files list is pointing, when that is not simply "wherever
 --- the body is".
 ---
@@ -277,8 +298,15 @@ end
 --- A string rather than a table so a comparison is one operation. Built from the
 --- two sets rather than from the resulting fold state, because that is what
 --- changes when a key is pressed.
-local function fold_signature(marks, overrides, side)
-  local parts = { side and "side" or "unified" }
+---
+--- `notes` is in it because the fold filter runs over the list the NOTES were
+--- interleaved into. Leaving it out cached a list built before a note existed
+--- and kept serving it: the note saved, exported and was invisible, and only on
+--- a diff where something was folded — so it looked like folding, and every test
+--- without a mark in it passed. A cache key has to name everything the cached
+--- value was derived from, not everything the cache is about.
+local function fold_signature(marks, overrides, side, revision)
+  local parts = { (side and "side" or "unified") .. ":n" .. tostring(revision) }
   for path in pairs(marks) do
     parts[#parts + 1] = "m" .. path
   end
@@ -352,15 +380,36 @@ local function rows_in_force(parse, id)
   if not id then
     return base
   end
+  -- Notes first, folding second: a note belongs to a file, so folding that file
+  -- takes its notes with it. The other order would leave a note floating under a
+  -- collapsed header with nothing to explain it.
+  local written = notes.all(state, id)
+  if #written > 0 then
+    base = notes.interleave(
+      parse,
+      base,
+      written,
+      (side_by_side() and "side" or "unified")
+        .. ":"
+        .. notes.revision(state, id)
+        .. ":"
+        .. parse.at
+    )
+  end
   local marks, overrides = marks_of(id), folds_of(id)
   if next(marks) == nil and next(overrides) == nil then
     -- Nothing folded: hand back the base list rather than a copy of it. This is
     -- the usual case and it should cost nothing.
     return base
   end
-  return diff.unfolded(parse, base, function(path)
-    return folded(marks, overrides, path)
-  end, fold_signature(marks, overrides, side_by_side()) .. ":" .. parse.at)
+  return diff.unfolded(
+    parse,
+    base,
+    function(path)
+      return folded(marks, overrides, path)
+    end,
+    fold_signature(marks, overrides, side_by_side(), notes.revision(state, id)) .. ":" .. parse.at
+  )
 end
 
 -- ── find-in-diff ────────────────────────────────────────────────────────────
@@ -1010,6 +1059,38 @@ local function truncation_notice(entry, parse)
   return "the patch is capped — some changes are not shown" .. size
 end
 
+--- The compose strip: what you are noting, and how long it lasts.
+---
+--- The lifetime is said HERE, where somebody is about to type, rather than only
+--- in a README they are not reading. `state` survives a reload and not a
+--- restart, so a note is for this sitting — which is the sitting it is for,
+--- since the point of writing one is to send it.
+local function compose_strip(width, held)
+  local anchor = held.anchor or {}
+  local where
+  if anchor.kind == "review" then
+    where = "the review"
+  elseif anchor.kind == "file" then
+    where = anchor.path or "?"
+  else
+    where = (anchor.path or "?") .. ":" .. tostring(anchor.line or "?")
+  end
+  local head = (held.editing and " editing note on " or " note on ")
+  local tail = "  ⇥ type · ↵ save · esc cancel · notes are lost when thurbox quits "
+  local pad_to = math.max(0, width - widgets.len(head) - widgets.len(where))
+  return {
+    type = "text",
+    len = 1,
+    text = {
+      {
+        { text = head, style = { fg = theme.muted } },
+        { text = where, style = { fg = theme.branch } },
+        { text = rows.pad(tail, pad_to), style = { fg = theme.hint } },
+      },
+    },
+  }
+end
+
 -- ── the footer hint strip ───────────────────────────────────────────────────
 
 local function hint(label, keys)
@@ -1038,6 +1119,7 @@ local function footer(width, ready)
     put("file", "⇥")
     put("hunk", "[ ]")
     put("find", "/")
+    put("note", "c")
     put("fold", "↵")
     -- Every key that changes what the BODY looks like belongs here. `w` was
     -- dropped from this list when `v` was added — replaced rather than added to
@@ -1243,10 +1325,10 @@ return {
     { key = "r", action = "review.refresh", desc = "recompute the diff" },
     { key = "e", action = "review.send", desc = "send this review to the agent" },
     { key = "esc", action = "review.close", desc = "close the search, or go back" },
-    -- Declared, and honest about being unbuilt: a key in `F1` that says what is
-    -- missing is more use than a key that is absent for a reason nobody can see.
-    { key = "c", action = "review.comment", desc = "comment (needs a kernel change)" },
-    { key = "s", action = "review.summary", desc = "summarise (needs a kernel change)" },
+    { key = "c", action = "review.comment", desc = "note on this line or file" },
+    { key = "s", action = "review.summary", desc = "note on the review as a whole" },
+    { key = "x", action = "review.delete", desc = "delete the note under the cursor" },
+    { key = "delete", action = "review.delete", desc = "delete the note under the cursor" },
   },
 
   render = function(ctx)
@@ -1393,7 +1475,11 @@ return {
     local hits = matches(id, parse, in_force, query(id))
     local bar = find_open(id) and 1 or 0
     local notice = entry.truncated and 1 or 0
-    local body_h = math.max(1, inner_h - bar - notice)
+    -- The compose block is a strip plus a framed field: one row saying what is
+    -- being noted and how long it lasts, three for the field itself.
+    local held = compose_of(id)
+    local compose_h = held and 4 or 0
+    local body_h = math.max(1, inner_h - bar - notice - compose_h)
     last_body_height[id] = body_h
 
     local at = math.min(cursor_of(id), math.max(1, #in_force))
@@ -1502,6 +1588,17 @@ return {
       stack[#stack + 1] = find_bar(id, inner_w, hits, at)
     end
     stack[#stack + 1] = { type = "box", axis = "horizontal", fill = 1, children = content }
+    if held then
+      stack[#stack + 1] = compose_strip(inner_w, held)
+      -- The fourth node kind, and the only one this pane had not used. A field
+      -- is a value and a caret; the buffer lives in `state` and the editing in
+      -- `lib.textinput`, which is the split that lets a reload keep what you
+      -- typed.
+      stack[#stack + 1] = textinput.node(held.field, {
+        label = notes.LABEL[held.class] or "Note",
+        focused = ctx.focused,
+      })
+    end
 
     -- The parse is still running: say so on the border rather than in the body,
     -- which is already showing the part that is readable.
@@ -1550,7 +1647,22 @@ return {
   --- the query has the keyboard.
   on_key = function(key)
     local id = current_id()
-    if not id or not finding(id) then
+    if not id then
+      return false
+    end
+    -- Composing takes every key the declared actions above declined. The editing
+    -- itself is `lib.textinput`'s, so this pane does not carry a second line
+    -- editor; the field is written back WHOLE because reading `state` hands back
+    -- a copy, and mutating that copy changes nothing.
+    if composing(id) then
+      local held = compose_of(id)
+      if held.field and textinput.key(held.field, key) then
+        set_compose(id, held)
+        return true
+      end
+      return false
+    end
+    if not finding(id) then
       return false
     end
     if key.key == "backspace" then
@@ -1631,6 +1743,61 @@ return {
     end
     local id = session.id
 
+    -- COMPOSING OWNS THE KEYBOARD, for the same reason and by the same rule as
+    -- the find query below: every letter this pane declares is a letter somebody
+    -- will type into a note. `esc` cancels, `↵` saves, `⇥` cycles the class, and
+    -- everything else is declined here so `on_key` sees it as typing.
+    if composing(id) then
+      if action == "review.close" then
+        set_compose(id, nil)
+        return true
+      end
+      if action == "review.find_commit" then
+        local held = compose_of(id)
+        local text = (held.field and held.field.value or ""):gsub("^%s*(.-)%s*$", "%1")
+        if text ~= "" then
+          if held.editing then
+            notes.update(state, id, held.editing, { text = text, class = held.class })
+          else
+            local note = {
+              kind = held.anchor.kind,
+              path = held.anchor.path,
+              side = held.anchor.side,
+              line = held.anchor.line,
+              class = held.class,
+              text = text,
+            }
+            notes.add(state, id, note)
+          end
+          -- Writing a note UNFOLDS the file it is on. Marking a file seen folds
+          -- it, so noting something on a file you had ticked off saved the note
+          -- and hid it in the same keystroke — the note was there, in the export
+          -- and in the state, and invisible. v1 hides a folded file's comments
+          -- too, but v1 folds after reviewing rather than as a side effect of
+          -- the key next to the note key.
+          --
+          -- The fold is cleared rather than toggled: `folded` is
+          -- `marks XOR override`, so making the override MATCH the mark is what
+          -- shows the file, whichever way it was folded.
+          local path = held.anchor and held.anchor.path
+          if path then
+            local overrides = folds_of(id)
+            overrides[path] = marks_of(id)[path] and true or nil
+            state["fold:" .. id] = overrides
+          end
+        end
+        set_compose(id, nil)
+        return true
+      end
+      if action == "review.next_file" or action == "review.previous_file" then
+        local held = compose_of(id)
+        held.class = notes.next_class(held.class)
+        set_compose(id, held)
+        return true
+      end
+      return false
+    end
+
     -- THE FIND QUERY OWNS THE KEYBOARD while it is being typed, and this gate is
     -- first for a reason found by running it: with the gate further down, typing
     -- `greet` reached `review.refresh` on the `r` and the query came out `geet`.
@@ -1674,11 +1841,12 @@ return {
       match_cache[id] = nil
       return true
     end
-    if action == "review.comment" or action == "review.summary" then
-      -- Deliberately does nothing but say so. `review_comments` exists in the
-      -- kernel's database and is not published to Lua, and there is no command
-      -- to write one — so a comment kept here would look saved and would not be.
-      command("focus", { text = NAME })
+    if action == "review.summary" then
+      set_compose(id, {
+        field = textinput.new(""),
+        class = "note",
+        anchor = { kind = "review" },
+      })
       return true
     end
 
@@ -1768,7 +1936,24 @@ return {
       -- back in it rather than making you type it again.
       state["find:" .. id], state["typing:" .. id] = true, true
     elseif action == "review.find_commit" then
-      -- Not searching, so this is the fold. The cursor is put on the file's
+      local row = in_force[at]
+      if row and row.kind == "note" then
+        -- On a note, `↵` edits it — v1's `cr_enter`, which edits when the cursor
+        -- is on a comment and folds otherwise.
+        set_compose(id, {
+          field = textinput.new(row.note.text or ""),
+          class = row.note.class or "note",
+          anchor = {
+            kind = row.note.kind,
+            path = row.note.path,
+            side = row.note.side,
+            line = row.note.line,
+          },
+          editing = row.note.id,
+        })
+        return true
+      end
+      -- Not on a note, so this is the fold. The cursor is put on the file's
       -- header first: it is the one row a fold keeps, so the cursor cannot be
       -- left pointing into rows that are about to disappear.
       local path = list_at(id) or diff.path_of(parse, in_force, at)
@@ -1806,6 +1991,19 @@ return {
         to = to or hits[#hits]
       end
       move_to(id, in_force, to)
+    elseif action == "review.comment" then
+      local anchor = notes.anchor_for(parse, in_force, at)
+      if anchor then
+        set_compose(id, { field = textinput.new(""), class = "note", anchor = anchor })
+      end
+    elseif action == "review.delete" then
+      local row = in_force[at]
+      if row and row.kind == "note" then
+        notes.remove(state, id, row.note.id)
+        -- The row under the cursor just went; step back so the cursor is not
+        -- left one past whatever took its place.
+        move_to(id, rows_in_force(parse, id), math.max(1, at - 1))
+      end
     elseif action == "review.mark" then
       -- The LIST's file, so a file whose patch was cut can still be marked seen.
       -- Reading a file you cannot open here — in an editor, on a forge — and
@@ -1826,7 +2024,8 @@ return {
             session,
             parse,
             diff.remap(parse, in_force, at, parse.rows),
-            marks_of(id)
+            marks_of(id),
+            notes.all(state, id)
           ),
       })
       -- Out to the pane that shares this slot, to watch the agent read it —

@@ -526,7 +526,12 @@ function M.unfolded(parse, base, is_folded, signature)
     if row.kind == "file" then
       hidden = is_folded(row.path) and row.file or nil
       out[#out + 1] = row
-    elseif row.file ~= hidden then
+    elseif hidden == nil or row.file ~= hidden then
+      -- `hidden == nil` first, because a row belonging to NO file — the summary
+      -- heading, and a note about the review rather than a line — has
+      -- `row.file == nil`, and `nil ~= nil` is false. Without the guard those
+      -- rows were dropped whenever anything at all was folded, which is the one
+      -- state where a reviewer is most likely to be writing a summary.
       out[#out + 1] = row
     end
   end

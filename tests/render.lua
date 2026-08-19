@@ -263,6 +263,40 @@ local function body_texts(node)
   return out
 end
 
+--- Forget everything the pane remembers about a session.
+---
+--- Blocks share one `state`, and the pane keeps marks, folds, cursors and
+--- queries per session — so a block that runs after the folding one inherits two
+--- collapsed files and a cursor sitting on a header. The first note written here
+--- anchored to a FILE instead of a line for exactly that reason, and the pane
+--- was right both times. A test that starts from whatever the last one left is
+--- testing an accident.
+local function forget(session)
+  -- The PARSE goes too. It carries the lists derived from this state — the
+  -- interleaved rows, the folded rows — keyed on counters that start again from
+  -- zero when the state is cleared. Without this, a block that resets and then
+  -- writes one note collides with the cache key of the block before it and is
+  -- served that block's rows. Nothing in the pane resets those counters; only a
+  -- test does, which is exactly why the test has to clear both halves.
+  require("thurbox-code-review.lib.diff").forget(session)
+  for _, prefix in ipairs({
+    "sel:",
+    "top:",
+    "hscroll:",
+    "marks:",
+    "fold:",
+    "notes:",
+    "notesrev:",
+    "compose:",
+    "find:",
+    "typing:",
+    "query:",
+    "list:",
+  }) do
+    state_backing[prefix .. session] = nil
+  end
+end
+
 --- The body line the cursor is on, found by its selection background.
 ---
 --- The right oracle for "did the jump land": asking whether a file is the LAST
@@ -915,6 +949,221 @@ do
   check("a narrow pane keeps the arrow", narrow:find("◀", 1, true) ~= nil)
   check("but drops the chord", narrow:find("F9", 1, true) == nil)
 
+  diff.forget("s1")
+end
+
+print("== notes ==")
+do
+  local diff = require("thurbox-code-review.lib.diff")
+  local notes = require("thurbox-code-review.lib.notes")
+  diff.forget("s1")
+  forget("s1")
+  snapshot(ready(2, 4))
+  render()
+  plugin.on_action("review.top")
+
+  local function composing_now()
+    return state_backing["compose:s1"] ~= nil
+  end
+
+  --- Type a string into the compose field, one key at a time, as a keyboard
+  --- does — through `on_key`, which is the only route a character has.
+  local function type_in(text)
+    for _, ch in utf8.codes(text) do
+      plugin.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
+    end
+  end
+
+  -- Move onto a body line, then note it.
+  plugin.on_action("review.next")
+  plugin.on_action("review.next")
+  check("c opens the composer", plugin.on_action("review.comment"))
+  has("which says what is being noted", joined(render()), "note on")
+  has("and how long it lasts, where you are typing", joined(render()), "lost when thurbox quits")
+
+  -- The fourth node kind, finally used.
+  local used = kinds(render())
+  check("the field is an `input` node", used.input == true)
+
+  type_in("this looks wrong")
+  check("⇥ cycles the classification", plugin.on_action("review.next_file"))
+  check("↵ saves", plugin.on_action("review.find_commit"))
+
+  local written = notes.all(state, "s1")
+  eq("one note", #written, 1)
+  eq("with the text typed", written[1].text, "this looks wrong")
+  eq("and the cycled class", written[1].class, "praise")
+  eq("anchored to a line", written[1].kind, "line")
+  check("of a file in the diff", written[1].path ~= nil)
+
+  -- It is a row in the body, selectable like any other.
+  local body = body_texts(render())
+  local shown = nil
+  for _, line in ipairs(body) do
+    if line:find("this looks wrong", 1, true) then
+      shown = line
+    end
+  end
+  check("the note is drawn in the body", shown ~= nil)
+  has("badged with its class", shown or "", "[Praise]")
+
+  -- `↵` on a note edits it rather than folding.
+  local at = nil
+  for index, line in ipairs(body) do
+    if line:find("this looks wrong", 1, true) then
+      at = index
+    end
+  end
+  check("found the row", at ~= nil)
+  state_backing["sel:s1"] = nil
+  for _ = 1, at - 1 do
+    plugin.on_action("review.next")
+  end
+  check("↵ on a note opens it for editing", plugin.on_action("review.find_commit"))
+  has("with the compose strip saying so", joined(render()), "editing note on")
+  type_in("!")
+  plugin.on_action("review.find_commit")
+  eq("still one note", #notes.all(state, "s1"), 1)
+  eq("with the edit applied", notes.all(state, "s1")[1].text, "this looks wrong!")
+
+  -- A summary note anchors to the review, not a file.
+  check("s opens a summary", plugin.on_action("review.summary"))
+  type_in("overall fine")
+  plugin.on_action("review.find_commit")
+  local all = notes.all(state, "s1")
+  eq("two notes now", #all, 2)
+  eq("the second is on the review", all[2].kind, "review")
+
+  -- Sending: v1's shape, and the notes ARE the review.
+  -- Cleared so the send below is the last command, not one of many.
+  for index = #commands, 1, -1 do
+    commands[index] = nil
+  end
+  plugin.on_action("review.send")
+  local sent = nil
+  for _, entry in ipairs(commands) do
+    if entry.kind == "send" then
+      sent = entry.args.text
+    end
+  end
+  check("a send was issued", sent ~= nil)
+  has("addressed to the agent", sent or "", "Please address the following code review")
+  has("headed as v1 heads it", sent or "", "# Code review")
+  has("grouped under the file", sent or "", "## pkg/file")
+  -- `old:` and not `new:`: the cursor was on a DELETION, which has only an old
+  -- side, and `anchor_for` gives it that one. Asserting `new:` here passed for
+  -- the wrong reason on a fixture whose first body row happened to be an
+  -- addition.
+  has("with the badge and the location", sent or "", "- **[Praise]** (old:")
+  has("carrying the note", sent or "", "this looks wrong!")
+  has("and a summary section", sent or "", "## Summary")
+  has("with the summary note", sent or "", "overall fine")
+
+  -- Cancelling leaves nothing behind.
+  plugin.on_action("review.comment")
+  type_in("never mind")
+  plugin.on_action("review.close")
+  eq("esc discards", #notes.all(state, "s1"), 2)
+
+  -- `x` deletes the note under the cursor.
+  state_backing["sel:s1"] = nil
+  local rows_now = body_texts(render())
+  local note_at = nil
+  for index, line in ipairs(rows_now) do
+    if line:find("this looks wrong!", 1, true) then
+      note_at = index
+    end
+  end
+  for _ = 1, (note_at or 1) - 1 do
+    plugin.on_action("review.next")
+  end
+  check("x deletes", plugin.on_action("review.delete"))
+  eq("one note left", #notes.all(state, "s1"), 1)
+  eq("and it is the summary", notes.all(state, "s1")[1].kind, "review")
+
+  -- With a file MARKED, which folds it — the state the render proof reaches by
+  -- the time it writes a note, and the one where the note vanished.
+  forget("s1")
+  render()
+  plugin.on_action("review.top")
+  plugin.on_action("review.mark")
+  local marked_path = nil
+  for path in pairs(state_backing["marks:s1"] or {}) do
+    marked_path = path
+  end
+  check("a file is marked", marked_path ~= nil)
+  plugin.on_action("review.comment")
+  check("the composer opens on a marked file", composing_now())
+  type_in("noted on a folded file")
+  plugin.on_action("review.find_commit")
+  eq("the note saves", #notes.all(state, "s1"), 1)
+  local seen = false
+  for _, line in ipairs(body_texts(render())) do
+    if line:find("noted on a folded file", 1, true) then
+      seen = true
+    end
+  end
+  -- Saving a note unfolds the file it is on, so the note you just wrote is
+  -- visible. Without that, `m` (which folds) followed by `c` saved the note and
+  -- hid it in the same breath.
+  check("and is drawn, because saving unfolded the file", seen)
+  check("while the file stays marked seen", (state_backing["marks:s1"] or {})[marked_path] == true)
+
+  -- The cache bug this block exists for, isolated from the unfold above: fold a
+  -- DIFFERENT file, then note one that was never folded. The fold filter runs
+  -- over the list the notes were interleaved into, so a signature that does not
+  -- name the notes serves a list built before the note existed — and the note
+  -- saves, exports, and is invisible.
+  forget("s1")
+  render()
+  plugin.on_action("review.top")
+  plugin.on_action("review.next_file") -- onto the SECOND file
+  plugin.on_action("review.mark") -- fold that one
+  plugin.on_action("review.previous_file") -- back to the first, unfolded
+  plugin.on_action("review.comment")
+  type_in("on an unfolded file, with another folded")
+  plugin.on_action("review.find_commit")
+  local drawn = false
+  for _, line in ipairs(body_texts(render())) do
+    if line:find("on an unfolded file", 1, true) then
+      drawn = true
+    end
+  end
+  check("a note shows even when another file is folded", drawn)
+
+  -- A SUMMARY note belongs to no file, so the fold filter has to keep it when
+  -- anything is folded — which is the state a reviewer is most likely to be
+  -- writing one in.
+  forget("s1")
+  render()
+  plugin.on_action("review.top")
+  plugin.on_action("review.mark") -- fold something
+  plugin.on_action("review.summary")
+  type_in("overall this is fine")
+  plugin.on_action("review.find_commit")
+  local summary_shown = false
+  for _, line in ipairs(body_texts(render())) do
+    if line:find("overall this is fine", 1, true) then
+      summary_shown = true
+    end
+  end
+  check("a summary survives a folded diff", summary_shown)
+
+  -- With a search still open, which is the state the render proof reaches by the
+  -- time it writes one — and the state that showed the note never saving.
+  forget("s1")
+  plugin.on_action("review.find")
+  for _, ch in utf8.codes("greet") do
+    plugin.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
+  end
+  plugin.on_action("review.find_commit") -- commit the query, bar stays open
+  plugin.on_action("review.comment")
+  check("the composer opens with a search open", composing_now())
+  type_in("noted while searching")
+  plugin.on_action("review.find_commit")
+  eq("and the note saves", #notes.all(state, "s1"), 1)
+
+  forget("s1")
   diff.forget("s1")
 end
 

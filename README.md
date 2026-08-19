@@ -76,9 +76,11 @@ which the pane relies on, since it joins the list to the body **by path**.
 | `m` | mark the current file seen — which folds it (**transient**, see below) |
 | `↵` | fold or unfold this file (or keep the search, while typing one) |
 | `r` | recompute the diff |
-| `e` | send this review to the session's agent |
+| `c` | note on the line or file under the cursor |
+| `s` | note on the review as a whole |
+| `x` `Del` | delete the note under the cursor |
+| `e` | send the notes to the session's agent |
 | `Esc` | close the find bar, or go back where you came from |
-| `c` `s` | comment / summarise — **declared, and not built**; see `KERNEL-GAPS.md` |
 
 `r` is refresh rather than v1's mark-reviewed, because `r` is refresh in every
 other pane and a chord that means two different things depending on where you
@@ -168,6 +170,37 @@ Lua and there is no command to write one. So `c` and `s` are declared, appear in
 
 `KERNEL-GAPS.md` states the exact read and command that would close comments, and
 the smaller gaps ranked by what using the pane actually made me want.
+
+## Notes
+
+Press `c` on a line and type. `⇥` cycles the classification (issue / suggestion /
+note / praise), `↵` saves, `esc` discards. `s` writes a note about the review
+rather than a line. Notes appear as rows in the diff under what they are about —
+one row each, selectable like any other — so `↵` on one edits it and `x` deletes
+it. `e` sends them all to the session's agent, in the markdown v1 sent:
+
+```markdown
+# Code review
+
+## src/one.lua
+- **[Issue]** (new:12) this needs a test
+- **[Note]** (file) worth splitting up
+
+## Summary
+- **[Praise]** clean change overall
+```
+
+**Notes are lost when thurbox quits.** They survive an `F10` reload and not a
+restart, because `state` — the plugin store — is an in-memory map the kernel
+never writes to disk, whatever the docs used to say. The pane tells you so on the
+line where you are typing, not only here.
+
+That is the sitting they are for: read a diff, note what you find, send it. The
+**sending** is not provisional — `command("send", …)` has always worked. Durable
+notes need the kernel to persist plugin state, or to publish the
+`review_comments` table it already carries; `KERNEL-GAPS.md` §1 has both shapes,
+and the general one is the better ask. If it lands, these notes stop evaporating
+without this pane changing.
 
 ## Marking and folding are two things
 

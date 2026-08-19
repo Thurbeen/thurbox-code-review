@@ -10,6 +10,7 @@
 -- worktree the diff was taken from; it can read the code. What it cannot see is
 -- which parts a human looked at and stopped on, so that is what goes.
 
+local notes = require("thurbox-code-review.lib.notes")
 local rows = require("thurbox-code-review.lib.rows")
 
 local M = {}
@@ -64,12 +65,84 @@ local function quote_hunk(parse, at)
   return (file and file.path or "?"), table.concat(out, "\n")
 end
 
+--- The notes, grouped by file then the summary — v1's `review_markdown`, shape
+--- for shape, so a prompt this pane sends reads like a prompt v1 sent.
+---
+--- Files are walked in DIFF order rather than note order, so the agent reads
+--- them in the order they appear in the change. A file with no notes writes no
+--- header — an empty `## src/foo.rs` is a heading about nothing.
+---
+--- Notes on a file that is not in the diff any more are NOT dropped silently:
+--- v1 omits them, and this counts them at the end instead. Somebody typed them.
+function M.notes_markdown(parse, written)
+  if #written == 0 then
+    return nil
+  end
+  local out = { "# Code review" }
+
+  for _, file in ipairs(parse.files) do
+    local wrote_header = false
+    for _, note in ipairs(written) do
+      if note.path == file.path then
+        if not wrote_header then
+          out[#out + 1] = ""
+          out[#out + 1] = "## " .. file.path
+          wrote_header = true
+        end
+        local where = note.kind == "line" and (note.side .. ":" .. tostring(note.line)) or "file"
+        out[#out + 1] = string.format(
+          "- **[%s]** (%s) %s",
+          notes.LABEL[note.class] or "Note",
+          where,
+          note.text or ""
+        )
+      end
+    end
+  end
+
+  local wrote_summary = false
+  for _, note in ipairs(written) do
+    if note.kind == "review" then
+      if not wrote_summary then
+        out[#out + 1] = ""
+        out[#out + 1] = "## Summary"
+        wrote_summary = true
+      end
+      out[#out + 1] =
+        string.format("- **[%s]** %s", notes.LABEL[note.class] or "Note", note.text or "")
+    end
+  end
+
+  local orphans = notes.orphans(parse, written)
+  if #orphans > 0 then
+    out[#out + 1] = ""
+    out[#out + 1] = string.format("## Notes on files no longer in this diff (%d)", #orphans)
+    for _, note in ipairs(orphans) do
+      out[#out + 1] = string.format(
+        "- **[%s]** (%s) %s",
+        notes.LABEL[note.class] or "Note",
+        note.path or "?",
+        note.text or ""
+      )
+    end
+  end
+
+  return table.concat(out, "\n")
+end
+
 --- The whole review as markdown.
 ---
 --- `at` is the cursor's logical row; when it sits inside a hunk that hunk is
 --- quoted, which is what makes the export answer "look at THIS" rather than
 --- "look at everything".
-function M.markdown(session, parse, at, reviewed)
+function M.markdown(session, parse, at, reviewed, written)
+  -- With notes, THEY are the review: v1 sends the comments and nothing else,
+  -- because the agent is standing in the worktree and can read the code. The
+  -- file list and the quoted hunk below are what this pane sends when there are
+  -- no notes yet — "here is what changed" rather than "here is what I think".
+  if written and #written > 0 then
+    return M.notes_markdown(parse, written)
+  end
   local out = {}
   out[#out + 1] = "Code review of " .. (session and session.name or "this session")
   out[#out + 1] = "(" .. M.range(session) .. ")"

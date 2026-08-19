@@ -297,6 +297,14 @@ send g
 send r
 shot 13-refreshed 1.5
 
+# A note, written the way a reviewer writes one.
+send c; sleep 0.5
+send -l "this deletion needs a test"; sleep 0.5
+send Tab
+shot 15-composing 0.8
+send Enter
+shot 16-noted 2.0
+
 send e
 shot 14-sent 1.5
 
