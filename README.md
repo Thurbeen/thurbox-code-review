@@ -30,11 +30,15 @@ thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
 agent's terminal and declares a pill, so the action band offers it the moment it
 is installed. Press `Ctrl+X` or `F7` — v1's chords, unbound in v2 until now.
 
-The same key takes you back out, and so does `Esc`. Neither names a pane to
-return to: `command("focus", { toggle = true })` reads the kernel's own memory of
-where focus came from, and an `Esc` this pane does not claim is answered by the
-kernel the same way. Which pane you return to is your arrangement's business, not
-this plugin's.
+The same key takes you back out, and so does `Esc` — onto **whatever else lives
+in this pane's slot**, which in the stock arrangement is the agent's terminal.
+That is v1's behaviour, where the review is a tab of the centre pane and leaving
+it shows the terminal again, rather than "wherever focus happened to be" — press
+`F7` from the session list and you still come back to the agent.
+
+It is derived, not named: `thurbox.plugins` publishes every pane's slot, so the
+pane asks the interface what shares its own rather than assuming your
+arrangement. Replace the agent pane and this follows.
 
 It asks for **no capabilities**. There is no `run`, no `program`, no filesystem:
 everything it draws comes from `thurbox.diffs`, which the kernel computes on a

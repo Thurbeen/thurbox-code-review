@@ -126,6 +126,10 @@ end
 
 local SESSION = { id = "s1", name = "demo", base_branch = "main", branch = "demo/x" }
 
+--- Which pane the snapshot says holds focus. The pane reads it to decide
+--- whether its own key is an enter or a leave.
+local focused_pane = "agent"
+
 local function snapshot(diff)
   _G.thurbox = {
     sessions = { SESSION },
@@ -133,6 +137,14 @@ local function snapshot(diff)
     theme = { name = "test", roles = roles },
     registry = { settings = settings, keys = {} },
     settings = {},
+    -- The interface's own inventory, which is how the pane finds what shares
+    -- its slot. Two occupants of `center`, as the stock arrangement has.
+    plugins = {
+      { name = "sessions", slot = "sessions", kind = "pane", state = "visible" },
+      { name = "agent", slot = "center", kind = "pane", state = "visible" },
+      { name = "review", slot = "center", kind = "pane", state = "hidden" },
+    },
+    focus = focused_pane,
   }
   store_backing.selected = "s1"
 end
@@ -785,6 +797,63 @@ do
     eq("`" .. key .. "` is declared", declared[declared_as], action)
     check("and offered in the footer as '" .. label .. "'", drawn:find(label, 1, true) ~= nil)
   end
+  diff.forget("s1")
+end
+
+print("== the way out is the pane that shares the slot ==")
+do
+  -- v1's review is a tab of the centre pane, so leaving it shows the terminal
+  -- again. `command("focus", { toggle = true })` returns to wherever focus came
+  -- from instead — which is the session list, if that is where the key was
+  -- pressed. This asserts the v1 answer, from BOTH starting points.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+
+  local function focused_now()
+    local last = commands[#commands]
+    return last and last.kind == "focus" and last.args and last.args.text or nil
+  end
+
+  -- From the agent: the key opens the review.
+  focused_pane = "agent"
+  snapshot(ready(2, 3))
+  plugin.on_action("review.open")
+  eq("opens onto itself", focused_now(), "review")
+
+  -- Focused: the same key leaves, onto the slot's other occupant.
+  focused_pane = "review"
+  snapshot(ready(2, 3))
+  plugin.on_action("review.open")
+  eq("leaves onto the agent", focused_now(), "agent")
+  check("and does not ask the kernel to toggle", commands[#commands].args.toggle == nil)
+
+  -- The case that prompted this: opened FROM THE SESSION LIST, the way out is
+  -- still the agent and not the list.
+  focused_pane = "sessions"
+  snapshot(ready(2, 3))
+  plugin.on_action("review.open")
+  eq("opens from the list too", focused_now(), "review")
+  focused_pane = "review"
+  snapshot(ready(2, 3))
+  plugin.on_action("review.open")
+  eq("and still leaves onto the agent", focused_now(), "agent")
+
+  -- `esc` and a send leave the same way, so the exits cannot disagree.
+  plugin.on_action("review.close")
+  eq("esc leaves onto the agent", focused_now(), "agent")
+  plugin.on_action("review.send")
+  eq("send leaves onto the agent", focused_now(), "agent")
+
+  -- A disabled sibling is not a destination.
+  thurbox.plugins = {
+    { name = "agent", slot = "center", kind = "pane", state = "disabled" },
+    { name = "review", slot = "center", kind = "pane", state = "visible" },
+  }
+  plugin.on_action("review.close")
+  eq("with no one to land on, it asks the kernel", focused_now(), "review")
+  check("by toggling", commands[#commands].args.toggle == true)
+
+  focused_pane = "agent"
   diff.forget("s1")
 end
 

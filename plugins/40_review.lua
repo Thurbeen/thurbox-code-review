@@ -52,6 +52,10 @@ local syntax = require("thurbox-code-review.lib.syntax")
 --- name a settings lookup filters on.
 local NAME = "review"
 
+--- The slot this pane occupies. Named once because two things need it: the
+--- declaration at the bottom, and finding what else lives here.
+local SLOT = "center"
+
 --- Columns the changed-files list asks for, and the width below which the pane
 --- stops offering it at all. Below `FILES_MIN_PANE` there is not room for a diff
 --- and a list of what is in it, and the diff is the thing you came for.
@@ -66,6 +70,61 @@ local HSCROLL_STEP = 8
 local PAGE = 10
 
 local ROUNDED = { tl = "╭", tr = "╮", bl = "╰", br = "╯", h = "─", v = "│" }
+
+--- The pane this one displaces: the other occupant of its own slot.
+---
+--- v1's review is a TAB of the centre pane, so leaving it shows the terminal
+--- again — not "whatever you were looking at before". In v2 it is a switch-slot
+--- alternate, and `command("focus", { toggle = true })` returns to wherever
+--- focus came from, which is the session list if that is where you pressed the
+--- key. Same keystroke, different destination, and v1's is the one that matches
+--- what a reviewer means by closing a review.
+---
+--- DERIVED, not named. Hard-coding `agent` would be asserting the default
+--- arrangement, and the arrangement is the user's file — the exact objection
+--- that made `toggle` a kernel primitive. But `thurbox.plugins` publishes every
+--- pane's slot, so "what else lives in mine" is a question the interface can
+--- answer about itself, and answering it is not the same as assuming it.
+---
+--- The first match wins, which is the rule the switch slot itself uses to choose
+--- what it shows: load order, set by the numeric filename prefix. States that
+--- cannot hold focus are skipped, so a disabled or unplaced sibling is never
+--- handed a keystroke it would swallow.
+local UNFOCUSABLE = {
+  disabled = true,
+  unplaced = true,
+  removed = true,
+  failed = true,
+}
+
+local function slot_mate()
+  for _, entry in ipairs((thurbox and thurbox.plugins) or {}) do
+    if
+      entry.kind == "pane"
+      and entry.slot == SLOT
+      and entry.name ~= NAME
+      and not UNFOCUSABLE[entry.state]
+    then
+      return entry.name
+    end
+  end
+  return nil
+end
+
+--- Leave this pane, landing on whatever shares its slot.
+---
+--- Falls back to the kernel's toggle when there is nothing to land on — a lone
+--- occupant, or an interface that published no inventory. Going back to where
+--- focus came from is a worse answer than this one, and a much better one than
+--- staying put.
+local function leave()
+  local mate = slot_mate()
+  if mate then
+    command("focus", { text = mate })
+  else
+    command("focus", { text = NAME, toggle = true })
+  end
+end
 
 -- ── reading the world ───────────────────────────────────────────────────────
 
@@ -946,7 +1005,7 @@ end
 
 return {
   name = NAME,
-  slot = "center",
+  slot = SLOT,
   -- The centre is a switch: the agent pane occupies it and this is its
   -- alternate, brought forward by being focused. Hence the pill below — an
   -- alternate nobody advertises is a pane that loads, places, passes every
@@ -1376,16 +1435,18 @@ return {
 
   on_action = function(action)
     if action == "review.open" then
-      -- One key in, the same key out. `toggle` is the kernel's, because the
-      -- kernel is what remembers where focus came from (`focus_return`, the
-      -- memory `Esc` reads). This pane cannot: `ctx.focused` is a render value
-      -- and a render's values are gone by the time a key arrives.
+      -- One key in, the same key out — and OUT is the pane that shares this
+      -- slot, not wherever focus happened to be. See `slot_mate`.
       --
-      -- It is also why the obvious hand-rolled version is wrong. "If I am
-      -- focused, focus `agent`" needs a name, and the only name available is
-      -- whoever shares this slot in the DEFAULT arrangement — which is the
-      -- user's file, not this plugin's assumption.
-      command("focus", { text = NAME, toggle = true })
+      -- `thurbox.focus` is the snapshot's answer to "which pane holds focus",
+      -- republished every frame and readable anywhere. Distinct from
+      -- `ctx.focused`, which is a render value and gone by the time a key
+      -- arrives: this is a READ, and reads are what a handler has.
+      if ((thurbox and thurbox.focus) or "") == NAME then
+        leave()
+      else
+        command("focus", { text = NAME })
+      end
       return true
     end
 
@@ -1422,11 +1483,12 @@ return {
         close_find(id)
         return true
       end
-      -- Declined, on purpose. An `Esc` no pane claims is the kernel's, and it
-      -- returns focus to wherever it came from — by the same memory `toggle`
-      -- uses. Handling it here would mean naming a pane to go back to; handing
-      -- it back means the answer is right whatever the arrangement is.
-      return false
+      -- The same destination as the key that opened it. Closing a review means
+      -- the centre showing its main pane again — v1's behaviour, and what the
+      -- open key now does; an `Esc` that went somewhere else would make the two
+      -- ways out of this pane disagree.
+      leave()
+      return true
     end
     if action == "review.refresh" then
       -- Drops the kernel's cached answer; the loop re-requests on the next
@@ -1592,9 +1654,9 @@ return {
             marks_of(id)
           ),
       })
-      -- Back where you came from to watch the agent read it — by the same
-      -- toggle, so this names no pane either.
-      command("focus", { text = NAME, toggle = true })
+      -- Out to the pane that shares this slot, to watch the agent read it —
+      -- the same way out as `esc` and the open key.
+      leave()
     else
       return false
     end

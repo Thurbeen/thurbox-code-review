@@ -225,6 +225,16 @@ send Escape; expect_focus Agent  "Esc back to the terminal"
 send F7;     expect_focus Review "F7 in, once more"
 send F7;     expect_focus Agent  "F7 out, once more"
 
+# The case that matters: opened from the SESSION LIST, the way out is still the
+# agent. `toggle` would have gone back to the list, which is not what closing a
+# review means.
+send C-h;    expect_focus Sessions "focus moved to the session list"
+send F7;     expect_focus Review   "F7 in from the list"
+send F7;     expect_focus Agent    "F7 out lands on the agent, not the list"
+send C-h;    expect_focus Sessions "back to the list"
+send F7;     expect_focus Review   "F7 in from the list again"
+send Escape; expect_focus Agent    "Esc lands on the agent too"
+
 send F7
 shot 01-review
 
