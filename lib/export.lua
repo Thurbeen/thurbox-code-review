@@ -74,11 +74,19 @@ end
 ---
 --- Notes on a file that is not in the diff any more are NOT dropped silently:
 --- v1 omits them, and this counts them at the end instead. Somebody typed them.
-function M.notes_markdown(parse, written)
+function M.notes_markdown(parse, written, range)
   if #written == 0 then
     return nil
   end
   local out = { "# Code review" }
+  -- What the notes are ABOUT, when it is not the whole branch. A review of one
+  -- commit that reads `new:12` and does not say which commit is a set of line
+  -- numbers with no referent — the agent is standing in the worktree, where
+  -- `new:12` means HEAD unless it is told otherwise.
+  if range and range ~= "" then
+    out[#out + 1] = ""
+    out[#out + 1] = "Reviewing `" .. range .. "`."
+  end
 
   for _, file in ipairs(parse.files) do
     local wrote_header = false
@@ -135,17 +143,17 @@ end
 --- `at` is the cursor's logical row; when it sits inside a hunk that hunk is
 --- quoted, which is what makes the export answer "look at THIS" rather than
 --- "look at everything".
-function M.markdown(session, parse, at, reviewed, written)
+function M.markdown(session, parse, at, reviewed, written, range)
   -- With notes, THEY are the review: v1 sends the comments and nothing else,
   -- because the agent is standing in the worktree and can read the code. The
   -- file list and the quoted hunk below are what this pane sends when there are
   -- no notes yet — "here is what changed" rather than "here is what I think".
   if written and #written > 0 then
-    return M.notes_markdown(parse, written)
+    return M.notes_markdown(parse, written, range)
   end
   local out = {}
   out[#out + 1] = "Code review of " .. (session and session.name or "this session")
-  out[#out + 1] = "(" .. M.range(session) .. ")"
+  out[#out + 1] = "(" .. (range or M.range(session)) .. ")"
   out[#out + 1] = ""
 
   local files = parse.files

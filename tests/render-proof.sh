@@ -130,10 +130,44 @@ fn main() {
 }
 EOF
 printf 'brand new\n' > src/added.txt
+git add -A && git commit -qm "rewrite greet, add a file"
+# A SECOND commit, so the target picker has more than one to offer and the
+# per-commit diff is a strict subset of the branch's. `main..HEAD` is the same
+# either way, so every assertion below about the branch diff is unaffected.
 git rm -q docs/old.md
 git mv docs/notes.md docs/renamed.md
 printf 'second\n' >> docs/renamed.md
-git add -A && git commit -qm "the changes under review"
+git add -A && git commit -qm "move the notes, drop the old ones"
+
+# --- trust, so the target picker can run git ---------------------------------
+#
+# The pane declares `capabilities = { "run" }`, and `run` is simply ABSENT until
+# the file is trusted — which is the capability model working, and which means an
+# automated proof has to grant it. There is no `thurbox-cli plugin trust`, so this
+# writes the grant `ui.json` carries: the file's absolute path against an FNV-1a
+# digest of its contents (`kernel::bundled::digest`), which is the same record the
+# Interface tab's `t` writes.
+#
+# Reported to the kernel session as a gap: a capability that can only be granted
+# by hand is a capability that cannot be exercised in CI.
+PANE="$UI_DIR/thurbox-code-review/plugins/40_review.lua"
+python3 - "$PANE" "$XDG_CONFIG_HOME/thurbox-dev/ui.json" <<'PYTRUST'
+import json, sys, pathlib
+
+pane, out = sys.argv[1], pathlib.Path(sys.argv[2])
+data = pathlib.Path(pane).read_bytes()
+h = 0xCBF29CE484222325
+for byte in data:
+    h ^= byte
+    h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+held = {}
+if out.exists():
+    held = json.loads(out.read_text())
+held.setdefault("trusted", {})[pane] = f"{h:016x}"
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(held, indent=2))
+print(f"trusted {pane} = {h:016x}")
+PYTRUST
 
 log "launching the TUI (${COLS}x${ROWS})"
 tmux -L "$SOCKET" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
@@ -448,5 +482,55 @@ shot 36-marked-past-the-cap 1.0
 # And any body movement puts the list back in step.
 send j
 shot 37-list-follows-again 1.0
+
+# ── the target picker ───────────────────────────────────────────────────────
+#
+# v1's `t`, and the thing the kernel does not compute: the branch diff is the
+# kernel's, and working changes and per-commit diffs come from `git` run on a
+# worker. Both are drawn by the same code — the entry shape is identical — so
+# what this proves is that the SECOND source paints, and that the header stops
+# saying `main..HEAD` when it is no longer showing it.
+log "the target picker"
+cd "$WORKTREE"
+# Something uncommitted, so `working` is a different diff from the branch's and
+# from any commit's. A TRACKED file, edited: `git diff HEAD` does not see an
+# untracked one, so a new file would have proved only that the empty state still
+# says "No changes" — true, and not what this section is for.
+printf 'uncommitted line\n' >> docs/renamed.md
+
+select_session "$(python3 -c "import json;d=json.load(open('$OUT/session.json'));print(d.get('id') or d['session']['id'])")"
+send F7
+wait_for "Code review"
+shot 40-branch-again 1.5
+
+send t
+catch 41-picker "Review what" 60 || shot 41-picker 2.0
+# The commit list is a `git log` on a worker, so it can take a frame to arrive.
+sleep 1.5
+shot 42-picker-commits 1.0
+
+# `g` FIRST, every time. The picker opens on the row in force, which is a
+# different row depending on what is being shown — so counting arrows from
+# wherever it happened to open picked a different target on the second run than
+# on the first, and the frame looked like the selection being ignored.
+#
+# From the top: 1 working, 2 the branch, 3 onwards the commits, newest first.
+send g; send Down; send Down
+shot 43-picker-on-a-commit 0.8
+send Enter
+shot 44-one-commit 2.5
+
+# Back to the picker and onto the working changes, which is the other target the
+# kernel does not serve.
+send t; sleep 0.8
+send g
+send Enter
+shot 45-working-changes 2.5
+
+# And back to the branch, which costs nothing because the kernel already has it.
+send t; sleep 0.8
+send g; send Down
+send Enter
+shot 46-branch-restored 2.0
 
 log "frames in $OUT"

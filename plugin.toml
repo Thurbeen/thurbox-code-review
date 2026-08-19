@@ -16,16 +16,23 @@
 # directory; a cloned repository already has its own directory and the pane
 # reaches its modules inside it (`require("thurbox-code-review.lib.diff")`).
 #
-# Nothing is fetched or built at install time and no capability is asked for:
-# everything the pane draws comes from `thurbox.diffs`, which the kernel computes
-# on a worker. See the README.
+# Nothing is fetched or built at install time, and ONE capability is asked for:
+# `run`, and only for the two review targets the kernel does not compute — the
+# uncommitted working changes of a session that has a base branch, and a single
+# commit. Everything else comes from `thurbox.diffs`, which the kernel computes
+# on a worker.
+#
+# Untrusted, the pane works: `run` is absent, the kernel's diff draws exactly as
+# it did before there was a picker, and `t` names the choices it cannot serve
+# rather than hiding them. See the README.
 name = "code-review"
 description = "The diff of a session's worktree against its base branch, reviewable in the TUI"
 version = "v0.1.0"
 
 # The kernel reads this pane needs: `store.selected`-driven diffs with
 # `base_branch` on the session row, a file list built independently of the capped
-# body, and `command("focus", { toggle })`. All of them are v2 plugin-kernel.
+# body, `command("focus", { toggle })`, and `run` with `thurbox.runs`. All of
+# them are v2 plugin-kernel.
 requires_thurbox = ">=2.0"
 
 pane = { source = "plugins/40_review.lua", path = "plugins/40_review.lua" }

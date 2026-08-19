@@ -110,7 +110,7 @@ A nicety, not a blocker.
 
 ---
 
-## 4. `thurbox.diffs` publishes one target per session
+## 4. `thurbox.diffs` publishes one target per session — BUILT ANOTHER WAY
 
 v1's `t` opened a picker: all branch changes (`base..HEAD`), working changes
 (uncommitted), or a single commit. Every git function it needs is still present
@@ -145,9 +145,70 @@ they matter, since a session with no `base_branch` falls back to
 `diff_working_on`, which is the case v1 needed the picker for; and per-commit is
 something I would go to `git` for. It is also the largest of these to build.
 
+### What was built instead, and what it costs
+
+The picker is here now, over `run`, at the owner's call and against the kernel
+maintainer's advice — which is recorded because the advice was good and the
+trade is real rather than imagined:
+
+> *two sources for one thing, disagreeing about caps, hosts and truncation, with
+> the default target coming from one and every other target from the other. A
+> pane that reports "4.0 of 21.1 MB" for one target and something `run`-shaped
+> for another is worse than a pane with no picker.*
+
+What the implementation does about it, and what remains true anyway:
+
+**One shape.** `lib/target.lua` produces an entry in `thurbox.diffs`' exact form
+— `state`, `files`, `body`, `truncated`, `raw_bytes` — and the pane's six uses of
+an entry did not change. The kernel still serves the default target, so the
+common path is byte for byte what it was and needs no capability.
+
+**The cap really does differ, and is not hidden.** `kernel::runs::OUTPUT_CAP` is
+256 KiB against `kernel::diff::MAX_DIFF_BYTES`' 4 MiB — sixteen times smaller. So
+the entry carries `cap` and the banner prints the number that applied. A commit
+diff is normally kilobytes, which is why this is survivable; a `run`-sourced
+*branch* diff of a large repository would be cut far earlier than the kernel cuts
+it, and says so.
+
+**The line boundary is repaired here.** The kernel cuts on one; a capture does
+not, so the last line of a truncated one is dropped rather than parsed as a real
+addition of a line that does not exist.
+
+**What is still worse than the kernel doing it.** A run answer is keyed
+`(plugin, key)` and evicted only when the plugin goes, so visiting N commits
+retains up to N x 256 KiB for the life of the process (30 commits is ~7.5 MB
+against a 256 MiB limit). The key has to name the target — one key reused across
+targets would serve the previous commit's diff while the new one ran, and no
+generation counter is published to tell them apart. It buys instant return to a
+commit already read. **A kernel-side `DiffStore` keyed on `(session, target)`
+would have neither problem**, which is the shape the maintainer described and the
+one to build when it is scheduled: this pane would then delete `lib/target.lua`'s
+git half and keep its picker.
+
 ---
 
-## 5. Small: the two v1 chords are still asserted unbound
+## 6. A capability can only be granted by hand
+
+`run` is absent until the file is trusted, which is the model working. But trust
+is written by the Interface tab's `t` and by nothing else — there is no
+`thurbox-cli plugin trust <path>`.
+
+The consequence is narrow and real: **a plugin that declares a capability cannot
+be exercised by an automated test**. `tests/render-proof.sh` drives a real
+thurbox in a real terminal, and to reach the picker at all it has to write the
+grant into `$XDG_CONFIG_HOME/thurbox-dev/ui.json` itself — computing the FNV-1a
+digest that `kernel::bundled::digest` computes, and depending on the bare-string
+grant form that `read_overrides` accepts. That is a test reaching into a private
+file format, and it will break silently the day the format moves.
+
+`thurbox-cli plugin trust <file>` (and `untrust`) would fix it, and would also
+serve the scripted-setup case — a machine provisioned from a config repository
+cannot press `t`. `plugin list --json` already reports `capabilities`, so the
+listing half exists.
+
+---
+
+## 7. Small: the two v1 chords are still asserted unbound
 
 `tests/v2_keymap.rs` lists `ctrl+x` and `f7` in `CHORDS_AWAITING_THEIR_PANE` and
 asserts they resolve to nothing, "until that pane is back". This pane claims both.

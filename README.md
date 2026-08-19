@@ -17,7 +17,7 @@ first consumer of `thurbox.diffs` anywhere.
 │ ✓ M one.lua +4 -2    │ 1  1  # Notes                           │
 │src/deep/nested/      │ 2  2  first                             │
 │   M two.rs +2 -1     │    3+ second                            │
-╰ j/k move ⇥ file [ ] hunk / find w wrap m seen r refresh e send ╯
+╰ j/k move ⇥ file [ ] hunk / find m seen t target r refresh e send╯
 ```
 
 ## Install
@@ -74,6 +74,7 @@ which the pane relies on, since it joins the list to the body **by path**.
 | `/` then `↵` | find in the diff, then keep it and stop typing |
 | `n` `N` | next / previous match |
 | `m` | mark the current file seen — which folds it (**transient**, see below) |
+| `t` | review a commit, the branch, or the working changes (see below) |
 | `↵` | fold or unfold this file (or keep the search, while typing one) |
 | `r` | recompute the diff |
 | `c` | note on the line or file under the cursor |
@@ -89,6 +90,41 @@ are standing is worse than one spelled differently here. Marking is `m`.
 `v`, `w`, `f` and the syntax switch are the **same** four settings you see in
 `Ctrl+,` → Plugins — the key writes the setting rather than shadowing it, so the
 modal always shows what the keys did and resetting it there works.
+
+## Choosing what to review
+
+`t` opens v1's picker: **the branch** (`base..HEAD`), the **working changes**
+(uncommitted), or **one commit**. It opens on the row you are already looking at,
+so `t ↵` changes nothing.
+
+The kernel computes exactly one of those — the branch when a session has a base,
+the working changes when it does not. The rest are asked for by running `git`,
+which is why this pane declares one capability:
+
+```lua
+capabilities = { "run" },
+```
+
+**Untrusted, everything else still works.** `run` is simply absent until you
+grant it (`Ctrl+,` → `]` → select → `t`), and without it the pane draws the
+kernel's diff exactly as it did before there was a picker — `t` still opens, and
+names the choices it cannot serve rather than hiding them. **Nothing is run until
+you open the picker**, and nothing at all for the target the kernel already has.
+
+Two sources for one diff is a real cost and the pane does not pretend otherwise:
+
+- **The cap differs.** The kernel cuts a body at 4 MiB; a run's output is cut at
+  256 KiB. The banner names whichever one applied, so "the first 256 KB git
+  printed" and "4.0 of 21.1 MB" are two different sentences on purpose.
+- **The file list is never cut with the body.** One `--numstat --raw -M -z`
+  gives the complete list whatever the patch cost — the same split the kernel
+  made in `962aef7`, for the same reason.
+- **A cut capture is trimmed to a line.** The kernel cuts on a line boundary and
+  a capture does not, so the half line goes rather than being parsed as an
+  addition of a line that does not exist.
+
+`KERNEL-GAPS.md` §4 has the shape a kernel-side `DiffStore` keyed on
+`(session, target)` would take, and what it would fix that this cannot.
 
 ## The one rule
 

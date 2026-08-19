@@ -150,3 +150,28 @@ ways this kind of code goes wrong:
 The lesson is the same one this file already records about the parse: **the
 budget is not what bounds this, the frame is** — and an O(diff) pass is a bug
 however cheap its inner loop, because the diff is a hundred thousand rows.
+
+## The second source, and what it adds
+
+The target picker takes its diff from `run` rather than from the kernel, which
+means the pane is handed a 256 KiB *string* where the kernel hands it a table of
+lines. That is a split the kernel's path does not pay:
+
+| | |
+|---|---|
+| splitting a full 256 KB capture (5,066 lines) | **1 batch** |
+| the cache guard, over 20 frames | **0 batches** |
+| the changed-file list, one file | **0 batches** |
+
+One batch is 100,000 instructions, paid **once per new answer** — a target switch
+or a refresh, not a frame. What keeps it off the frame is the guard, and the
+guard is a string comparison of the whole capture: a length check and a memcmp in
+C, which is why it does not register in Lua's instruction count at all. That was
+the prediction and it is the measurement; if it ever stops being true, the
+caching strategy is the thing to revisit rather than the split.
+
+Note the ratio the picker lives under. The kernel's cap is 4 MiB and a run's is
+256 KiB, so a run-sourced body is at most one sixteenth of a kernel-sourced one —
+and everything measured above about the parse and the render is therefore an
+**upper bound** for a picked target, not an estimate of one. The expensive case
+is the kernel's, and the kernel's is the default.

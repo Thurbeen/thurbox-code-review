@@ -359,6 +359,19 @@ function M.progress(parse)
   return math.min(1, (parse.at - 1) / count)
 end
 
+--- Forget every parse under a session, whichever target it was of.
+---
+--- The parse is keyed by session AND target, so a caller holding only the
+--- session id cannot name the key. Used by the refresh path and by the tests,
+--- both of which mean "all of this session's".
+function M.forget_all(stem)
+  for key in pairs(cache) do
+    if key == stem or string.sub(key, 1, #stem + 1) == stem .. "\1" then
+      cache[key] = nil
+    end
+  end
+end
+
 --- Forget everything cached for a session, so the next parse starts over.
 ---
 --- Called when the pane asks for a refresh, so a recomputed diff of exactly the

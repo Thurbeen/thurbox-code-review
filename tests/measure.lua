@@ -192,4 +192,62 @@ local steady = cost(function()
   end
 end)
 print(string.format("  steady frame (cache hit + window) -> %d batches", steady))
+-- ── a run-sourced target: turning one capture into a diff ──────────────────
+--
+-- The picker's second source hands the pane a STRING, and the kernel hands it a
+-- table of lines. So there is a split that the kernel's path does not pay, and
+-- it is bounded by the run's own cap rather than by the diff's: 256 KiB, which
+-- is one sixteenth of the 4 MiB measured above.
+--
+-- Measured twice, because both halves matter: the split itself (paid once per
+-- new answer) and the CACHE GUARD (paid every frame, and the reason the split is
+-- not paid every frame).
+
+local target = require("thurbox-code-review.lib.target")
+
+local capture = {}
+do
+  local size = 0
+  local index = 1
+  while size < 256 * 1024 do
+    local line = body[((index - 1) % #body) + 1]
+    capture[#capture + 1] = line
+    size = size + #line + 1
+    index = index + 1
+  end
+end
+local captured = table.concat(capture, "\n")
+
+local split = cost(function()
+  target.split_lines(captured, false)
+end)
+print(
+  string.format(
+    "  run capture %d KB -> %d lines, %d batches to split",
+    math.floor(#captured / 1024),
+    #target.split_lines(captured, false),
+    split
+  )
+)
+
+-- The guard: a string comparison of the whole capture, which is what stands
+-- between the split above and it happening on every frame. It is a length check
+-- and a memcmp in C, so it should not register in Lua's instruction count at
+-- all — and if it ever does, the caching strategy is the thing to revisit.
+local same = captured .. ""
+local hits = 0
+local guard = cost(function()
+  for _ = 1, 20 do
+    if captured == same then
+      hits = hits + 1
+    end
+  end
+end)
+print(string.format("  the cache guard over %d frames -> %d batches", hits, guard))
+
+local listed = cost(function()
+  target.parse_files(":100644 100644 aaa bbb M\0src/one.lua\0" .. "3\t1\tsrc/one.lua\0")
+end)
+print(string.format("  the changed-file list (one file) -> %d batches", listed))
+
 print("  (the kernel allows 200 batches per call)")

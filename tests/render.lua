@@ -104,6 +104,47 @@ _G.command = function(kind, args)
   end
 end
 
+-- ── programs, and the trust that gates them ─────────────────────────────────
+--
+-- `run` is a GLOBAL that is simply absent until the plugin is trusted — that is
+-- capability-by-absence, and the pane's untrusted path is `if not run then`. So
+-- the harness has to be able to take it away, not merely to make it fail.
+
+local runs_backing, asked = {}, {}
+
+local function grant_run(granted)
+  if granted then
+    _G.run = function(key, program, opts)
+      asked[#asked + 1] = { key = key, program = program, opts = opts or {} }
+    end
+  else
+    _G.run = nil
+  end
+end
+
+--- Publish an answer for a key, as `thurbox.runs` would carry it.
+local function answers(key, fields)
+  runs_backing[key] = fields
+end
+
+--- Every program asked for since the last `forget_runs`, as one string.
+local function programs_asked()
+  local out = {}
+  for _, one in ipairs(asked) do
+    out[#out + 1] = one.program
+  end
+  return table.concat(out, "\n")
+end
+
+local function forget_runs()
+  for key in pairs(runs_backing) do
+    runs_backing[key] = nil
+  end
+  for index = #asked, 1, -1 do
+    asked[index] = nil
+  end
+end
+
 local real_require, loaded = require, {}
 _G.require = function(name)
   if loaded[name] then
@@ -152,6 +193,9 @@ local function snapshot(diff)
       { name = "review", slot = "center", kind = "pane", state = "hidden" },
     },
     focus = focused_pane,
+    -- Answers to the programs THIS plugin asked for. Empty unless a test filled
+    -- it, which is the same as a run that has not finished.
+    runs = runs_backing,
   }
   store_backing.selected = "s1"
 end
@@ -278,7 +322,11 @@ local function forget(session)
   -- writes one note collides with the cache key of the block before it and is
   -- served that block's rows. Nothing in the pane resets those counters; only a
   -- test does, which is exactly why the test has to clear both halves.
-  require("thurbox-code-review.lib.diff").forget(session)
+  -- Every SCOPE of it: the parse is keyed by session and target together, so
+  -- `forget(session)` alone left the previous block's rows behind the key the
+  -- next block would build.
+  require("thurbox-code-review.lib.diff").forget_all(session)
+  require("thurbox-code-review.lib.target").forget(session)
   for _, prefix in ipairs({
     "sel:",
     "top:",
@@ -292,10 +340,29 @@ local function forget(session)
     "typing:",
     "query:",
     "list:",
+    "target:",
+    "picker:",
   }) do
-    state_backing[prefix .. session] = nil
+    -- Both the plain key and every SCOPED one. Per-review state is keyed by
+    -- session AND target now (`sel:s1\1commit:abc1234`), so clearing only
+    -- `sel:s1` would leave a cursor behind for every target the block visited —
+    -- and the next block would start on it, which is the accident this exists to
+    -- prevent.
+    local stem = prefix .. session
+    for key in pairs(state_backing) do
+      if key == stem or string.sub(key, 1, #stem + 1) == stem .. "\1" then
+        state_backing[key] = nil
+      end
+    end
   end
 end
+
+--- The scope the pane keys per-review state by, for the kernel's own target.
+---
+--- Spelled out in ONE place: a test that hardcodes `sel:s1` in six places is six
+--- things to fix the next time the key changes, and five of them will be found
+--- by a failure rather than by looking.
+local DEFAULT_SCOPE = require("thurbox-code-review.lib.target").scope("", nil)
 
 --- The body line the cursor is on, found by its selection background.
 ---
@@ -368,6 +435,7 @@ local function hasnt(name, text, needle)
   check(name, text:find(needle, 1, true) == nil, "unexpectedly present: " .. needle)
 end
 
+local target_lib = require("thurbox-code-review.lib.target")
 local plugin = assert(loadfile(REPO .. "/plugins/40_review.lua"))()
 local CTX = { width = 120, height = 40, focused = true, elapsed = 0 }
 
@@ -599,7 +667,7 @@ do
   --- the assertions run against a pane that has drawn what it decided.
   local function highlighted()
     render()
-    return state_backing["list:s1"]
+    return state_backing["list:s1" .. DEFAULT_SCOPE]
   end
 
   eq("it starts following the body", highlighted(), nil)
@@ -1015,7 +1083,7 @@ do
     end
   end
   check("found the row", at ~= nil)
-  state_backing["sel:s1"] = nil
+  state_backing["sel:s1" .. DEFAULT_SCOPE] = nil
   for _ = 1, at - 1 do
     plugin.on_action("review.next")
   end
@@ -1066,7 +1134,7 @@ do
   eq("esc discards", #notes.all(state, "s1"), 2)
 
   -- `x` deletes the note under the cursor.
-  state_backing["sel:s1"] = nil
+  state_backing["sel:s1" .. DEFAULT_SCOPE] = nil
   local rows_now = body_texts(render())
   local note_at = nil
   for index, line in ipairs(rows_now) do
@@ -1208,6 +1276,231 @@ do
 
   forget("s1")
   diff.forget("s1")
+end
+
+-- ── the target picker ───────────────────────────────────────────────────────
+
+print("== untrusted, the pane still works and the picker says why ==")
+do
+  forget("s1")
+  forget_runs()
+  grant_run(false)
+  snapshot(ready(2, 3))
+  render()
+
+  -- The property worth protecting: nothing is run, and nothing needs to be, for
+  -- the diff the kernel already computes.
+  eq("nothing was run for the kernel's own diff", programs_asked(), "")
+  has("and the header names its range", joined(render()), "main..HEAD")
+
+  check("t opens the picker", plugin.on_action("review.target"))
+  local shown = joined(render())
+  has("it asks what to review", shown, "Review what?")
+  has("working changes are offered", shown, "uncommitted changes")
+  has("so is the branch", shown, "main..HEAD")
+  -- The branch IS the kernel's here, so it is the one that costs nothing.
+  has("and is marked as already served", shown, "ready")
+  -- And it is the one in force, marked. `nil` means "the kernel's own", which is
+  -- the BRANCH here — a dot that matched nothing left the picker unable to say
+  -- what you were already looking at.
+  has("the target in force is marked", shown, "● main..HEAD")
+  hasnt("and it is not the other one", shown, "● uncommitted")
+  has("the rest needs trust", shown, "needs trust")
+
+  -- `t` opens ON the row in force, so `t ↵` changes nothing — which is what
+  -- makes `t` safe to press just to find out what you are looking at.
+  plugin.on_action("review.find_commit")
+  hasnt("↵ on the row it opened on is a no-op", joined(render()), "Review what?")
+  has("and the target did not move", joined(render()), "main..HEAD")
+  plugin.on_action("review.target")
+
+  -- Choosing one that needs trust does NOT switch to it: it would fail, and a
+  -- picker that lets you pick a broken thing is worse than one that says so.
+  plugin.on_action("review.top")
+  check("↵ on an untrusted choice is declined", plugin.on_action("review.find_commit"))
+  has("so the picker stays open", joined(render()), "Review what?")
+
+  check("esc closes it", plugin.on_action("review.close"))
+  hasnt("and the diff is back", joined(render()), "Review what?")
+  eq("still nothing was run", programs_asked(), "")
+end
+
+print("== trusted, a commit can be reviewed ==")
+do
+  forget("s1")
+  forget_runs()
+  grant_run(true)
+  snapshot(ready(2, 3))
+  render()
+
+  check("t opens the picker", plugin.on_action("review.target"))
+  render()
+  -- Opening it is what asks for the commit list, and not before.
+  has("the picker asks git for the log", programs_asked(), " log --no-color")
+  has("bounded", programs_asked(), "-n 200")
+  has("over the branch's range", programs_asked(), "main..HEAD")
+  has("with paths left verbatim", programs_asked(), "core.quotepath=false")
+  has("and it says it is asking", joined(render()), "listing commits")
+
+  answers("rv:s1:log", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = "a1b2c3d\t9999999\tmake it work\ne4f5a6b\t8888888 7777777\tmerge branch\n",
+  })
+  local listed = joined(render())
+  has("the commit is offered", listed, "a1b2c3d make it work")
+  has("with its subject", listed, "make it work")
+  -- `git show` draws nothing for a merge without `-m`, so the picker says which
+  -- ones those are rather than offering a silently empty diff.
+  has("and a merge is labelled", listed, "merge")
+
+  -- Down past working and branch, onto the first commit.
+  plugin.on_action("review.top")
+  plugin.on_action("review.next")
+  plugin.on_action("review.next")
+  check("↵ picks it", plugin.on_action("review.find_commit"))
+  hasnt("the picker closes", joined(render()), "Review what?")
+
+  local head = joined(render())
+  has("and the header names the commit", head, "a1b2c3d make it work")
+  hasnt("not the branch it is on", head, "main..HEAD")
+
+  -- The two runs a commit target needs, with v1's own flags.
+  local wanted = programs_asked()
+  has("git show for the patch", wanted, "show --no-color --format= 'a1b2c3d'")
+  has("and one command for the file list", wanted, "--numstat --raw -M -z")
+  has("with the sha quoted", wanted, "'a1b2c3d'")
+
+  has("meanwhile it says it is building", joined(render()), "Building diff")
+
+  answers("rv:s1:commit:a1b2c3d:files", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = ":100644 100644 aaa bbb M\0src/one.lua\0" .. "3\t1\tsrc/one.lua\0",
+  })
+  answers("rv:s1:commit:a1b2c3d:body", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = table.concat({
+      "diff --git a/src/one.lua b/src/one.lua",
+      "--- a/src/one.lua",
+      "+++ b/src/one.lua",
+      "@@ -1,2 +1,4 @@",
+      " local x = 1",
+      "-local y = 2",
+      "+local y = 3",
+      "+local z = 4",
+      "+local w = 5",
+      "",
+    }, "\n"),
+  })
+  render()
+  local drawn = joined(render())
+  -- The list is a TREE: the directory is its own row and the file row carries
+  -- the leaf. Asserting on the joined path here would assert the list is flat.
+  has("the commit's directory is listed", drawn, "src/")
+  has("with its file under it", drawn, "one.lua")
+  has("with its counts", drawn, "+3 -1")
+  local lines = table.concat(body_texts(render()), "\n")
+  has("and its body is the run's", lines, "local z = 4")
+  hasnt("not the kernel's", lines, "new line 1 of file 1")
+
+  -- Back to the branch, which is the kernel's and costs nothing.
+  plugin.on_action("review.target")
+  plugin.on_action("review.top") -- working changes, which need a run
+  plugin.on_action("review.next") -- the branch, which is the kernel's
+  plugin.on_action("review.find_commit")
+  local back = joined(render())
+  -- A tree again: `pkg/` heads the group and the leaf is the row.
+  has("switching back reaches the kernel's diff", back, "file1.txt")
+  has("and the header says so", back, "main..HEAD")
+end
+
+print("== the two sources report their own limits ==")
+do
+  forget("s1")
+  forget_runs()
+  grant_run(true)
+  snapshot(ready(2, 3))
+  render()
+
+  target_lib.set(state, "s1", { kind = "commit", sha = "beefbee" })
+  answers("rv:s1:commit:beefbee:files", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = ":100644 100644 aaa bbb M\0src/big.lua\0" .. "9\t0\tsrc/big.lua\0",
+  })
+  answers("rv:s1:commit:beefbee:body", {
+    state = "done",
+    ok = true,
+    -- Cut by the RUN's cap, which is 256 KB and not the kernel's 4 MB.
+    truncated = true,
+    stdout = table.concat({
+      "diff --git a/src/big.lua b/src/big.lua",
+      "--- a/src/big.lua",
+      "+++ b/src/big.lua",
+      "@@ -1,1 +1,3 @@",
+      "+one",
+      "+tw",
+    }, "\n"),
+  })
+  render()
+  local said = joined(render())
+  has("the banner names the cap that applied", said, "256 KB")
+  hasnt("not the kernel's", said, "4.0 of")
+
+  -- git failing is git's own words, not a shrug.
+  target_lib.set(state, "s1", { kind = "commit", sha = "0badc0d" })
+  answers("rv:s1:commit:0badc0d:files", {
+    state = "done",
+    ok = false,
+    status = 128,
+    stderr = "fatal: bad object 0badc0d\n",
+  })
+  answers("rv:s1:commit:0badc0d:body", { state = "done", ok = false, status = 128, stderr = "" })
+  local failed = joined(render())
+  has("a failed run says why", failed, "fatal: bad object 0badc0d")
+  has("and offers the way out", failed, "press r to try again")
+
+  target_lib.set(state, "s1", nil)
+  grant_run(false)
+  forget_runs()
+  forget("s1")
+end
+
+print("== where you are is per target ==")
+do
+  forget("s1")
+  forget_runs()
+  grant_run(true)
+  snapshot(ready(3, 6))
+  render()
+
+  for _ = 1, 8 do
+    plugin.on_action("review.next")
+  end
+  local moved = state_backing["sel:s1" .. DEFAULT_SCOPE]
+  check("the cursor moved on the branch", (moved or 1) > 1)
+
+  target_lib.set(state, "s1", { kind = "commit", sha = "abc1234" })
+  render()
+  eq(
+    "and the commit starts at the top",
+    state_backing["sel:s1" .. target_lib.scope("", { kind = "commit", sha = "abc1234" })],
+    nil
+  )
+
+  target_lib.set(state, "s1", nil)
+  render()
+  eq("while the branch kept its place", state_backing["sel:s1" .. DEFAULT_SCOPE], moved)
+
+  grant_run(false)
+  forget_runs()
+  forget("s1")
 end
 
 print("== no session ==")

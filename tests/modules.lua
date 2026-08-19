@@ -747,5 +747,134 @@ do
   eq("the fingerprint catches a same-length change", third.files[1].path, "a")
 end
 
+-- ── the review target ───────────────────────────────────────────────────────
+
+local target = require("thurbox-code-review.lib.target")
+
+print("== a target is a key, and the key is a round trip ==")
+do
+  local fake = {}
+  eq("the kernel's own", target.key(nil), "default")
+  eq("working", target.key({ kind = "working" }), "working")
+  eq("a commit", target.key({ kind = "commit", sha = "a1b2c3d" }), "commit:a1b2c3d")
+
+  target.set(fake, "s1", { kind = "commit", sha = "deadbee" })
+  local back = target.of(fake, "s1")
+  eq("survives the round trip", back and back.kind, "commit")
+  eq("with its sha", back and back.sha, "deadbee")
+
+  -- A key this pane did not write is not a target. `state` outlives a reload and
+  -- an older version of this plugin could have left anything there.
+  fake["target:s2"] = "not-a-target"
+  eq("junk reads as the default", target.of(fake, "s2"), nil)
+  fake["target:s3"] = "commit:zzz"
+  eq("a non-hex sha is junk too", target.of(fake, "s3"), nil)
+
+  target.set(fake, "s1", nil)
+  eq("and clears", target.of(fake, "s1"), nil)
+end
+
+print("== who serves which target ==")
+do
+  local with = { id = "s1", base_branch = "main" }
+  local without = { id = "s2" }
+  check("the default is always the kernel's", target.kernel_serves(with, nil))
+  check("branch, when there is a base", target.kernel_serves(with, { kind = "branch" }))
+  check("working, when there is not", target.kernel_serves(without, { kind = "working" }))
+  -- The two that need `run`, and they are the two v1 had that the kernel does
+  -- not compute. If either of these ever reads true, the pane silently draws the
+  -- wrong diff rather than failing.
+  check(
+    "working is NOT the kernel's when there is a base",
+    not target.kernel_serves(with, { kind = "working" })
+  )
+  check("a commit never is", not target.kernel_serves(with, { kind = "commit", sha = "abc" }))
+end
+
+print("== what a target is called ==")
+do
+  local session = { id = "s1", base_branch = "main" }
+  eq("the default names the range", target.label(nil, session, {}), "main..HEAD")
+  eq("so does the branch", target.label({ kind = "branch" }, session, {}), "main..HEAD")
+  eq("working says so", target.label({ kind = "working" }, session, {}), "uncommitted changes")
+  eq(
+    "a commit carries its subject",
+    target.label({ kind = "commit", sha = "a1b2c3d" }, session, {
+      { sha = "a1b2c3d", subject = "fix the thing" },
+    }),
+    "a1b2c3d fix the thing"
+  )
+  -- Before the log arrives there is no subject, and the sha is still the answer.
+  eq(
+    "and its sha alone when the list is not in yet",
+    target.label({ kind = "commit", sha = "a1b2c3d" }, session, {}),
+    "a1b2c3d"
+  )
+  eq("no base, no range", target.label(nil, { id = "s2" }, {}), "uncommitted changes")
+end
+
+print("== the changed-file list, from git's own bytes ==")
+do
+  -- Captured from a real `git diff --no-color --numstat --raw -M -z HEAD~1..HEAD`
+  -- over a repo with one addition, one deletion and one rename-with-edit. Real
+  -- bytes rather than a hand-written approximation: every parser this pane has
+  -- broken was broken on a shape somebody assumed.
+  local captured = table.concat({
+    ":000000 100644 0000000 3e75765 A\0added.txt\0",
+    ":100644 000000 587be6b 0000000 D\0gone.txt\0",
+    ":100644 100644 de98044 d68dd40 R075\0old.txt\0renamed.txt\0",
+    "1\t0\tadded.txt\0",
+    "0\t1\tgone.txt\0",
+    "1\t0\t\0old.txt\0renamed.txt\0",
+  })
+  local files = target.parse_files(captured)
+  eq("three files", #files, 3)
+  eq("the addition", files[1].path, "added.txt")
+  eq("is an A", files[1].status, "A")
+  eq("with its counts", files[1].added .. "/" .. files[1].removed, "1/0")
+  eq("the deletion", files[2].path, "gone.txt")
+  eq("is a D", files[2].status, "D")
+  -- A rename is keyed on the NEW path, with the old carried beside it — the same
+  -- shape `session::review::parse_changed_files` produces, because the pane's
+  -- file rows and every note anchored to one are keyed on that path.
+  eq("the rename lands on its new name", files[3].path, "renamed.txt")
+  eq("is an R", files[3].status, "R")
+  eq("and remembers the old one", files[3].old_path, "old.txt")
+  eq("with the edit counted", files[3].added, 1)
+
+  -- A binary file has no line counts, and `-` is not a number.
+  local binary = ":100644 100644 aaa bbb M\0logo.png\0-\t-\tlogo.png\0"
+  local one = target.parse_files(binary)
+  eq("a binary file is listed", one[1] and one[1].path, "logo.png")
+  eq("with no additions", one[1] and one[1].added, 0)
+  eq("and no removals", one[1] and one[1].removed, 0)
+
+  eq("nothing changed is no files", #target.parse_files(""), 0)
+end
+
+print("== a capture that was cut is cut on a LINE ==")
+do
+  local whole = "diff --git a/a b/a\n@@ -1 +1 @@\n+one\n"
+  eq("every line, when it is whole", #target.split_lines(whole, false), 3)
+  -- The kernel cuts its 4 MiB on a line boundary; a run's 256 KiB lands wherever
+  -- it lands. The half line goes, because a truncated `+two` parses as a real
+  -- addition of a line that does not exist.
+  local cut = "diff --git a/a b/a\n@@ -1 +1 @@\n+one\n+tw"
+  eq("the half line is dropped", #target.split_lines(cut, true), 3)
+  eq("and the whole ones are kept", target.split_lines(cut, true)[3], "+one")
+  -- Not truncated and no trailing newline: that last line is real.
+  eq("an untruncated last line stays", #target.split_lines(cut, false), 4)
+end
+
+print("== the scope names the session and the target ==")
+do
+  eq("the default", target.scope("s1", nil), "s1\1default")
+  eq("a commit", target.scope("s1", { kind = "commit", sha = "abc1234" }), "s1\1commit:abc1234")
+  check(
+    "two targets never share a scope",
+    target.scope("s1", { kind = "working" }) ~= target.scope("s1", { kind = "branch" })
+  )
+end
+
 print(string.format("\n%d checks, %d failures", count, failures))
 os.exit(failures == 0 and 0 or 1)

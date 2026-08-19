@@ -51,6 +51,7 @@ local export = require("thurbox-code-review.lib.export")
 local notes = require("thurbox-code-review.lib.notes")
 local textinput = require("lib.textinput")
 local syntax = require("thurbox-code-review.lib.syntax")
+local target = require("thurbox-code-review.lib.target")
 
 --- What this pane is called: the focus ring, `command("focus", …)`, and the
 --- name a settings lookup filters on.
@@ -150,12 +151,46 @@ local function selected()
   return nil
 end
 
---- What the kernel knows about that session's changes, or nil for "never asked".
+--- Sessions whose next ask should re-run rather than take the fresh answer.
+---
+--- Set by `r` and cleared by the render that consumed it, so a refresh is one
+--- ask and not a state the pane sits in — `refresh = true` on every frame would
+--- be a `git show` per frame, which is the exact thing the kernel's freshness
+--- rule exists to prevent.
+local refreshing = {}
+
+--- What the review is OF, for the session in force. `nil` is the kernel's own.
+local function target_of(id)
+  return target.of(state, id)
+end
+
+--- A state key that names the session AND what it is showing.
+---
+--- Where you are in a review is a property of the review, and switching from the
+--- branch to one commit inside it is a different review — carrying the cursor,
+--- the scroll and the folds across would land you on row 4,000 of a forty-row
+--- diff. The parse is keyed the same way, so flipping back to a target you have
+--- already read redraws it rather than re-reading it.
+---
+--- Notes and seen-marks are deliberately NOT keyed this way: a note is about a
+--- line of code and stays true whichever diff you found it in, which is also how
+--- v1 keys its comments.
+local function scope(id)
+  return target.scope(id, target_of(id))
+end
+
+--- What is known about that session's changes, or nil for "never asked".
+---
+--- The kernel's answer when the kernel computes this target — which is the
+--- resting case, needs no capability, and is byte for byte what this pane drew
+--- before there was a picker. Otherwise git is run for it, and `lib/target.lua`
+--- hands back the same shape so that nothing below here can tell the difference.
 local function published(session)
   if not session then
     return nil
   end
-  return (thurbox and thurbox.diffs or {})[session.id]
+  local kernel = (thurbox and thurbox.diffs or {})[session.id]
+  return target.entry(session, target_of(session.id), kernel, refreshing[session.id])
 end
 
 -- ── the parse, and its epoch ────────────────────────────────────────────────
@@ -171,13 +206,22 @@ local seen_state = {}
 
 --- Advance the epoch when a session's diff leaves the `ready` state, and return
 --- the epoch in force.
-local function epoch_of(id, state)
-  local before = seen_state[id]
-  if before == "ready" and state ~= "ready" then
-    epochs[id] = (epochs[id] or 0) + 1
+--- Keyed by SCOPE, not by session: switching from the branch to a commit swaps
+--- the body under the pane without any state passing through, so an epoch that
+--- counted only the kernel's transitions would hand the new body the old parse.
+local function epoch_of(id, phase)
+  local key = scope(id)
+  local before = seen_state[key]
+  if before == "ready" and phase ~= "ready" then
+    epochs[key] = (epochs[key] or 0) + 1
   end
-  seen_state[id] = state
-  return epochs[id] or 0
+  seen_state[key] = phase
+  return epochs[key] or 0
+end
+
+--- The epoch in force, for the handlers, which do not advance it.
+local function epoch_now(id)
+  return epochs[scope(id)] or 0
 end
 
 -- ── per-session cursor state ────────────────────────────────────────────────
@@ -192,27 +236,27 @@ end
 -- is the first trap PLUGINS.md names.
 
 local function cursor_of(id)
-  return state["sel:" .. id] or 1
+  return state["sel:" .. scope(id)] or 1
 end
 
 local function set_cursor(id, at)
-  state["sel:" .. id] = at > 1 and at or nil
+  state["sel:" .. scope(id)] = at > 1 and at or nil
 end
 
 local function top_of(id)
-  return state["top:" .. id] or 1
+  return state["top:" .. scope(id)] or 1
 end
 
 local function set_top(id, at)
-  state["top:" .. id] = at > 1 and at or nil
+  state["top:" .. scope(id)] = at > 1 and at or nil
 end
 
 local function hscroll_of(id)
-  return state["hscroll:" .. id] or 0
+  return state["hscroll:" .. scope(id)] or 0
 end
 
 local function set_hscroll(id, at)
-  state["hscroll:" .. id] = at > 0 and at or nil
+  state["hscroll:" .. scope(id)] = at > 0 and at or nil
 end
 
 -- ── composing a note ────────────────────────────────────────────────────────
@@ -234,6 +278,28 @@ local function composing(id)
   return id ~= nil and compose_of(id) ~= nil
 end
 
+-- ── the target picker ───────────────────────────────────────────────────────
+--
+-- Open state IS the selected index: a picker with nothing selected is not a
+-- state this has, and two keys that have to agree about whether it is open is
+-- one more thing to get wrong.
+--
+-- Per session and NOT per scope, unlike the cursor: the picker is how you change
+-- the scope, so keying it by the scope would reset it on the frame it did its
+-- job.
+
+local function picker_at(id)
+  return state["picker:" .. id]
+end
+
+local function set_picker(id, at)
+  state["picker:" .. id] = at
+end
+
+local function picking(id)
+  return id ~= nil and picker_at(id) ~= nil
+end
+
 --- Where the changed-files list is pointing, when that is not simply "wherever
 --- the body is".
 ---
@@ -247,11 +313,11 @@ end
 --- Any movement of the BODY clears it, so the two can never silently disagree:
 --- either you are driving the list, or the list is following you.
 local function list_at(id)
-  return state["list:" .. id]
+  return state["list:" .. scope(id)]
 end
 
 local function set_list_at(id, path)
-  state["list:" .. id] = path
+  state["list:" .. scope(id)] = path
 end
 
 --- Files marked reviewed, as `path -> true`.
@@ -472,12 +538,12 @@ local function matches(id, parse, in_force, needle)
   -- Keyed on the LAYOUT as well: the two lists index differently, so a match
   -- list built against one is a set of wrong row numbers in the other.
   local layout = side_by_side() and "side" or "unified"
-  local held = match_cache[id]
+  local held = match_cache[scope(id)]
   if
-    not (held and held.needle == needle and held.epoch == epochs[id] and held.layout == layout)
+    not (held and held.needle == needle and held.epoch == epoch_now(id) and held.layout == layout)
   then
-    held = { needle = needle, epoch = epochs[id], layout = layout, scanned = 0, list = {} }
-    match_cache[id] = held
+    held = { needle = needle, epoch = epoch_now(id), layout = layout, scanned = 0, list = {} }
+    match_cache[scope(id)] = held
   end
   local lowered = string.lower(needle)
   local list = held.list
@@ -1040,12 +1106,113 @@ end
 --- The file count needs a finished parse (it is a count of what the BODY holds),
 --- so until then this says bytes alone rather than a number that would keep
 --- changing.
+-- ── the target picker's body ────────────────────────────────────────────────
+
+--- What each choice reads as, and what marks the one in force.
+---
+--- The RANGE is spelled out rather than only named, for both the branch and the
+--- working entries, because "all branch changes" is a phrase and `main..HEAD` is
+--- a fact — and the fact is the thing a reviewer checks before believing the
+--- diff. v1 puts both in its label for the same reason.
+local function choice_line(choice, session, width, current, commits)
+  local mark = target.same(session, choice.target, current) and "●" or " "
+  local label = target.label(choice.target, session, commits)
+  local note = ""
+  if choice.commit and choice.commit.merge then
+    -- `git show` draws nothing for a merge without `-m`, so a picker that
+    -- offered one silently would offer an empty pane. v1 has the same blind
+    -- spot; saying so costs one word.
+    note = "  merge"
+  elseif choice.needs_trust then
+    note = "  needs trust"
+  elseif target.kernel_serves(session, choice.target) then
+    note = "  ready"
+  end
+  local room = width - 3 - widgets.len(note)
+  return mark .. " " .. widgets.truncate(label, math.max(1, room)), note
+end
+
+--- The picker, drawn where the diff would be. v1 replaces the body too, and the
+--- reason holds here: the body is where you are already looking, and a review
+--- has no room for a third column.
+local function target_picker(session, opts)
+  local width, height = opts.width, opts.height
+  local children = {}
+  local function line(runs)
+    children[#children + 1] = { type = "text", len = 1, text = { runs } }
+  end
+  local function say(text, style)
+    line({ { text = rows.pad(" " .. text, width), style = style } })
+  end
+
+  say("Review what?", { fg = theme.secondary, bold = true })
+
+  local choices = opts.choices
+  local room = math.max(1, height - 3)
+  local first, last = widgets.window(#choices, room, opts.at)
+  for index = first, last do
+    local choice = choices[index]
+    local text, note = choice_line(choice, session, width - 1, opts.current, opts.commits.list)
+    local here = index == opts.at
+    local base
+    if here then
+      base = { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+    elseif choice.needs_trust then
+      base = { fg = theme.muted }
+    else
+      base = { fg = theme.text }
+    end
+    local body = rows.pad(" " .. text, width - widgets.len(note))
+    children[#children + 1] = {
+      type = "text",
+      len = 1,
+      -- Identity, so a click picks the target under it — the same affordance the
+      -- changed-files list has, and for the same reason: a list of choices you
+      -- can only reach with the keyboard is half a list.
+      id = "target:" .. target.key(choice.target),
+      role = "row",
+      text = {
+        {
+          { text = body, style = base },
+          { text = note, style = here and base or { fg = theme.hint } },
+        },
+      },
+    }
+  end
+
+  -- What the commit half of the list is doing, said where the gap is rather
+  -- than left as an absence — an empty picker and a picker still asking git look
+  -- identical otherwise.
+  local commits = opts.commits
+  if commits.state == "pending" then
+    say(spinner(opts.elapsed) .. " listing commits…", { fg = theme.muted })
+  elseif commits.state == "denied" then
+    say("commits need trust: settings → Interface → t", { fg = theme.hint })
+  elseif commits.state == "failed" then
+    say(commits.error or "could not list commits", { fg = theme.bad })
+  elseif commits.truncated then
+    say("more commits than fit — the newest " .. target.MAX_COMMITS, { fg = theme.hint })
+  end
+
+  children[#children + 1] = { type = "text", fill = 1, text = "" }
+  return { type = "box", axis = "vertical", fill = 1, children = children }
+end
+
+--- Why the body is short, in the numbers that actually applied.
+---
+--- Two sources, two caps: the kernel cuts a diff at 4 MiB and a `run` cuts its
+--- stdout at 256 KiB, so a fixed "4.0 MB" here would be a lie for every target
+--- the picker added. The cap is carried on the entry and printed from there, and
+--- the total is printed only when there IS one — a cut capture cannot say how
+--- big the whole was, and inventing a number is worse than omitting one.
 local function truncation_notice(entry, parse)
-  local shown = 4 * 1024 * 1024
+  local shown = entry.cap or (4 * 1024 * 1024)
   local whole = entry.raw_bytes
   local size = ""
   if type(whole) == "number" and whole > shown then
-    size = string.format(" (4.0 of %.1f MB)", whole / (1024 * 1024))
+    size = string.format(" (%.1f of %.1f MB)", shown / (1024 * 1024), whole / (1024 * 1024))
+  elseif shown < 1024 * 1024 then
+    size = string.format(" (the first %d KB git printed)", shown / 1024)
   end
   local listed = #(entry.files or {})
   if parse.done and listed > #parse.files then
@@ -1130,6 +1297,7 @@ local function footer(width, ready)
     put("wrap", "w")
     put("split", "v")
     put("seen", "m")
+    put("target", "t")
     put("refresh", "r")
     put("send", "e")
   end
@@ -1206,19 +1374,19 @@ local wanted = {}
 --- the user presses another key, which is a click that looks broken.
 --- Idempotent, so a second render in the same frame changes nothing.
 local function settle_jump(id, parse, in_force, move)
-  local path = wanted[id]
+  local path = wanted[scope(id)]
   if not path then
     return
   end
   local row = diff.file_row(in_force, path)
   if row then
-    wanted[id] = nil
+    wanted[scope(id)] = nil
     move(row)
   elseif parse.done then
     -- The parse finished without ever producing that file: its patch was past
     -- the cut. Forget it rather than waiting forever — the row is drawn muted
     -- from here on, so the answer is on screen rather than only in this table.
-    wanted[id] = nil
+    wanted[scope(id)] = nil
   end
 end
 
@@ -1259,6 +1427,19 @@ return {
   focusable = true,
 
   pills = { { action = "review.open", label = "Review", priority = 20 } },
+
+  -- ONE capability, and the pane works without it.
+  --
+  -- The kernel computes exactly one of v1's three review targets — the branch
+  -- when a session has a base, the working changes when it does not — so the
+  -- other two, and every per-commit target, have to be asked for. `run` is the
+  -- only door to git, and it is off until you grant it.
+  --
+  -- Untrusted, nothing here degrades except the picker: the pane draws the
+  -- kernel's diff exactly as it did before there was one, and `t` opens a list
+  -- that names the other choices and says they need trust rather than hiding
+  -- them. Nothing is run until you open that list or pick something in it.
+  capabilities = { "run" },
 
   settings = {
     { id = "side", desc = "Start with the diff side by side rather than unified", default = false },
@@ -1319,6 +1500,12 @@ return {
     { key = "n", action = "review.find_next", desc = "next match" },
     { key = "N", action = "review.find_previous", desc = "previous match" },
     { key = "m", action = "review.mark", desc = "mark this file seen" },
+    -- v1's key for the same picker, so the muscle memory carries.
+    {
+      key = "t",
+      action = "review.target",
+      desc = "review a commit, the branch, or working changes",
+    },
     -- `r` is refresh, not mark, because `r` is refresh in every other pane and a
     -- chord that means two things depending on where you are standing is worse
     -- than one that is spelled differently here.
@@ -1375,13 +1562,46 @@ return {
     end
 
     local id = session.id
+    local here = target_of(id)
+    -- Only ever asked for while the picker is open, so a pane nobody opens the
+    -- picker on runs no `git log` at all.
+    local commits = picking(id) and target.commits(session, refreshing[id])
+      or { state = "idle", list = {} }
     local entry = published(session)
-    local range = export.range(session)
+    -- One ask, consumed. Cleared HERE rather than in the handler because this is
+    -- the frame that carried it to `run`.
+    refreshing[id] = nil
+
+    -- What the review is OF, and it is the target's name now rather than the
+    -- session's base branch — those were the same thing until there was a
+    -- picker, and a header that kept saying `main..HEAD` over one commit's diff
+    -- would be the pane lying about the only thing it exists to show.
+    local range = target.label(here, session, target.known_commits(session))
     local range_runs = {
       { text = " ", style = edge },
       { text = range, style = { fg = theme.branch } },
       { text = " ", style = edge },
     }
+
+    -- The picker outranks every diff state below, including "still building":
+    -- it is how you leave a target that is slow, or that failed, and a picker
+    -- you could not reach from the state it exists to escape would be no use.
+    if picking(id) then
+      local choices = target.choices(session, commits.list)
+      local at = math.min(math.max(1, picker_at(id)), math.max(1, #choices))
+      return frame({
+        right = range_runs,
+        body = target_picker(session, {
+          width = math.max(1, width - 2),
+          height = math.max(1, height - 2),
+          choices = choices,
+          current = here,
+          commits = commits,
+          at = at,
+          elapsed = ctx.elapsed,
+        }),
+      })
+    end
 
     -- State one: nobody has asked. Since the kernel began driving the request
     -- from the selection this is a frame or two at most, so it is drawn as the
@@ -1426,7 +1646,7 @@ return {
       })
     end
 
-    local parse = diff.parse(id, entry.body or {}, epoch)
+    local parse = diff.parse(scope(id), entry.body or {}, epoch)
     -- The rows on screen. Two flat lists over one parse — unified, or paired for
     -- the side-by-side layout — and which one is in force decides what a
     -- selectable unit IS, so everything downstream takes this and not
@@ -1690,9 +1910,32 @@ return {
       if not entry or entry.state ~= "ready" then
         return false
       end
-      local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
+      local parse = diff.parse(scope(session.id), entry.body or {}, epoch_now(session.id))
       move_to(session.id, rows_in_force(parse, session.id), row)
       return true
+    end
+
+    local key = hit.id and string.match(hit.id, "^target:(.+)$")
+    if key then
+      local session = selected()
+      if not session then
+        return false
+      end
+      local choices = target.choices(session, target.commits(session).list)
+      for index, choice in ipairs(choices) do
+        if target.key(choice.target) == key then
+          if choice.needs_trust then
+            -- Selecting it would fail; moving to it says which one you meant and
+            -- leaves the reason on screen beside it.
+            set_picker(session.id, index)
+          else
+            target.set(state, session.id, choice.target)
+            set_picker(session.id, nil)
+          end
+          return true
+        end
+      end
+      return false
     end
 
     local path = hit.id and string.match(hit.id, "^file:(.+)$")
@@ -1707,7 +1950,7 @@ return {
     if not entry or entry.state ~= "ready" then
       return false
     end
-    local parse = diff.parse(session.id, entry.body or {}, epochs[session.id] or 0)
+    local parse = diff.parse(scope(session.id), entry.body or {}, epoch_now(session.id))
     local in_force = rows_in_force(parse, session.id)
     local row = diff.file_row(in_force, path)
     if row then
@@ -1715,7 +1958,7 @@ return {
     else
       -- The list is the kernel's and is complete; the body is this pane's and is
       -- not, yet. Remember the ask and let the parse deliver it.
-      wanted[session.id] = path
+      wanted[scope(session.id)] = path
     end
     return true
   end,
@@ -1818,6 +2061,61 @@ return {
       return false
     end
 
+    -- THE PICKER OWNS THE KEYBOARD while it is open, by the same rule as the two
+    -- gates above: `j` and `k` move in it, `↵` chooses, and every other key this
+    -- pane binds would act on a diff that is not on screen.
+    --
+    -- Deliberately ABOVE the "needs the diff" line: the picker is how you leave a
+    -- target that is slow or that failed, so it has to work in exactly the states
+    -- where there is no diff to act on.
+    if picking(id) then
+      local choices = target.choices(session, target.commits(session).list)
+      local at = math.min(math.max(1, picker_at(id)), math.max(1, #choices))
+      if action == "review.close" or action == "review.target" then
+        set_picker(id, nil)
+        return true
+      end
+      if action == "review.next" then
+        set_picker(id, math.min(at + 1, #choices))
+      elseif action == "review.previous" then
+        set_picker(id, math.max(at - 1, 1))
+      elseif action == "review.page_down" then
+        set_picker(id, math.min(at + PAGE, #choices))
+      elseif action == "review.page_up" then
+        set_picker(id, math.max(at - PAGE, 1))
+      elseif action == "review.top" then
+        set_picker(id, 1)
+      elseif action == "review.bottom" then
+        set_picker(id, math.max(1, #choices))
+      elseif action == "review.refresh" then
+        -- The commit list, not the diff: it is what you are looking at.
+        refreshing[id] = true
+      elseif action == "review.find_commit" then
+        local chosen = choices[at]
+        if chosen and not chosen.needs_trust then
+          target.set(state, id, chosen.target)
+          set_picker(id, nil)
+        end
+      end
+      return true
+    end
+
+    if action == "review.target" then
+      local choices = target.choices(session, target.commits(session).list)
+      local here = target_of(id)
+      local at = 1
+      for index, choice in ipairs(choices) do
+        if target.same(session, choice.target, here) then
+          at = index
+        end
+      end
+      -- Opening ON the target in force, so `t ↵` is a no-op rather than a
+      -- surprise — v1 does the same, and it is what makes `t` safe to press to
+      -- find out what you are looking at.
+      set_picker(id, at)
+      return true
+    end
+
     -- Everything below this line needs the diff. The three that do not are
     -- handled first so they still work while one is being built.
     if action == "review.close" then
@@ -1837,8 +2135,15 @@ return {
       -- frame and the worker recomputes. Ours goes too, so a recomputed diff of
       -- exactly the same shape is still re-read.
       command("diff", { session = id })
-      diff.forget(id)
-      match_cache[id] = nil
+      -- Every target's, not only the one on screen: `r` means "ask git again",
+      -- and coming back to a target you refreshed away from should not be served
+      -- the parse of a diff you deliberately discarded.
+      diff.forget_all(id)
+      target.forget(id)
+      -- One ask, not a state: the flag is consumed by the render it reaches, so
+      -- `refresh = true` never becomes "run git on every frame".
+      refreshing[id] = true
+      match_cache[scope(id)] = nil
       return true
     end
     if action == "review.summary" then
@@ -1854,7 +2159,7 @@ return {
     if not entry or entry.state ~= "ready" then
       return true
     end
-    local parse = diff.parse(id, entry.body or {}, epochs[id] or 0)
+    local parse = diff.parse(scope(id), entry.body or {}, epoch_now(id))
     local in_force = rows_in_force(parse, id)
     local at = math.min(cursor_of(id), math.max(1, #in_force))
 
@@ -2025,7 +2330,11 @@ return {
             parse,
             diff.remap(parse, in_force, at, parse.rows),
             marks_of(id),
-            notes.all(state, id)
+            notes.all(state, id),
+            -- What was reviewed, in the words the header used. Without it a
+            -- review of one commit arrives as a list of line numbers against a
+            -- worktree that has moved on.
+            target.label(target_of(id), session, target.known_commits(session))
           ),
       })
       -- Out to the pane that shares this slot, to watch the agent read it —
