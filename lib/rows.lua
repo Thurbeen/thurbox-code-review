@@ -394,14 +394,15 @@ local function expand(into, row, opts)
       }
       local text = slice(line.text or "", 1, body_w)
       for _, run in
-        ipairs(
-          code_runs(
-            text,
-            { fg = fg, bg = bg, bold = selected or nil },
-            { lang = opts.lang, query = query, selected = selected },
-            selected and sel_style or hit_style
-          )
-        )
+        ipairs(code_runs(text, { fg = fg, bg = bg, bold = selected or nil }, {
+          lang = opts.lang,
+          -- The half's OWN side, so its own region: a comment opened in the
+          -- removed column is not open in the added one. A line with only an
+          -- old number is the removed half.
+          lex = (line.old_no and not line.new_no) and opts.lex_old or opts.lex_new,
+          query = query,
+          selected = selected,
+        }, selected and sel_style or hit_style))
       do
         runs[#runs + 1] = run
       end
@@ -454,7 +455,7 @@ local function expand(into, row, opts)
         code_runs(
           chunk,
           body_style,
-          { lang = opts.lang, query = query, selected = selected },
+          { lang = opts.lang, lex = opts.lex, query = query, selected = selected },
           selected and sel_style or hit_style
         )
       )
@@ -526,6 +527,14 @@ function M.window(rows, first, opts)
   for _ = 1, math.max(1, #rows) do
     local lines, logical = {}, {}
     local sel_first = nil
+    -- The regions the two sides are in as the window opens. Walked back to the
+    -- enclosing hunk header ONCE and then carried forward row by row, so the
+    -- cost is the hunk plus the window rather than the diff. `lang_of` is nil
+    -- when highlighting is off, and then none of this runs.
+    local old_state, new_state = syntax.CODE, syntax.CODE
+    if opts.lang_of then
+      old_state, new_state = syntax.state_at(rows, first, opts.lang_of)
+    end
     for at = first, #rows do
       if #lines >= height then
         break
@@ -534,6 +543,17 @@ function M.window(rows, first, opts)
         sel_first = #lines + 1
       end
       local row = rows[at]
+      -- The region THIS row starts in, before it is advanced by the row itself.
+      local lex = nil
+      if opts.lang_of then
+        local canonical = row
+        if row.kind == "pair" then
+          canonical = opts.canonical[row.new or row.old]
+        end
+        if canonical and canonical.kind == "line" then
+          lex = syntax.for_side(canonical.side, old_state, new_state)
+        end
+      end
       local produced = expand(lines, row, {
         width = opts.width,
         digits = opts.digits,
@@ -548,8 +568,38 @@ function M.window(rows, first, opts)
         -- Per ROW, because a diff spans files and its languages with them. Nil
         -- when highlighting is off, which is the whole switch.
         lang = opts.lang_of and opts.lang_of(row) or nil,
+        lex = lex,
+        -- Both halves of a paired row, each with its own side's region.
+        lex_old = opts.lang_of and old_state or nil,
+        lex_new = opts.lang_of and new_state or nil,
         selected = at == selected,
       })
+      -- Advance past this row, so the next one starts where this one left off.
+      if opts.lang_of then
+        local lang = opts.lang_of(row)
+        local function step(line)
+          if not line or line.kind ~= "line" then
+            return
+          end
+          local text = line.text or ""
+          if line.side == "del" then
+            old_state = syntax.after(old_state, text, lang)
+          elseif line.side == "add" then
+            new_state = syntax.after(new_state, text, lang)
+          else
+            local after = syntax.after(new_state, text, lang)
+            old_state, new_state = after, after
+          end
+        end
+        if row.kind == "line" then
+          step(row)
+        elseif row.kind == "pair" then
+          step(row.old and opts.canonical[row.old])
+          step(row.new and opts.canonical[row.new])
+        elseif row.kind == "hunk" or row.kind == "file" then
+          old_state, new_state = syntax.CODE, syntax.CODE
+        end
+      end
       for _ = 1, produced do
         logical[#logical + 1] = at
       end

@@ -133,6 +133,7 @@ end
 -- The interesting number is the difference, not the total.
 
 local syntax = require("thurbox-code-review.lib.syntax")
+
 for _, shape in ipairs({ { 120, 40 }, { 200, 60 } }) do
   local opts_off = {
     width = shape[1],

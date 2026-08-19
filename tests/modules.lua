@@ -530,11 +530,25 @@ print("== syntax ==")
 do
   local syntax = require("thurbox-code-review.lib.syntax")
 
-  eq("lua comments are --", syntax.lang_for("a/b/c.lua").line_comment, "--")
-  eq("python comments are #", syntax.lang_for("x.py").line_comment, "#")
-  eq("rust comments are //", syntax.lang_for("x.rs").line_comment, "//")
-  eq("an extensionless name still resolves", syntax.lang_for("Dockerfile").line_comment, "#")
-  eq("and an unknown one falls back", syntax.lang_for("x.zzz").line_comment, "//")
+  eq("lua comments are --", syntax.lang_for("a/b/c.lua").line, "--")
+  eq("python comments are #", syntax.lang_for("x.py").line, "#")
+  eq("rust comments are //", syntax.lang_for("x.rs").line, "//")
+  eq("an extensionless name still resolves", syntax.lang_for("Dockerfile").line, "#")
+  eq("and an unknown one falls back", syntax.lang_for("x.zzz").line, "//")
+
+  -- PER LANGUAGE, which is the point of the families. One union across every
+  -- language accented `end` in Rust and `fn` in Python — a word that is a
+  -- keyword somewhere lighting up everywhere.
+  local function is_keyword(path, word)
+    return syntax.lang_for(path).keywords[word] == true
+  end
+  check("`end` is a keyword in lua", is_keyword("x.lua", "end"))
+  check("and is NOT one in rust", not is_keyword("x.rs", "end"))
+  check("`fn` is a keyword in rust", is_keyword("x.rs", "fn"))
+  check("and is NOT one in python", not is_keyword("x.py", "fn"))
+  check("`elif` is python's", is_keyword("x.py", "elif"))
+  check("and not lua's", not is_keyword("x.lua", "elif"))
+  check("an unknown extension still knows something", is_keyword("x.zzz", "return"))
 
   local lua = syntax.lang_for("x.lua")
   local function classify(text, lang)
@@ -605,6 +619,118 @@ do
       return true
     end)()
   )
+end
+
+print("== regions that outlive a line ==")
+do
+  local syntax = require("thurbox-code-review.lib.syntax")
+  local rust = syntax.lang_for("x.rs")
+  local lua_lang = syntax.lang_for("x.lua")
+
+  -- What a line LEAVES behind.
+  eq("plain code leaves code", syntax.after(syntax.CODE, "let x = 1;", rust), syntax.CODE)
+  eq("an opened block leaves a comment", syntax.after(syntax.CODE, "/* open", rust), syntax.COMMENT)
+  eq("opened and closed leaves code", syntax.after(syntax.CODE, "/* both */ x", rust), syntax.CODE)
+  eq("a comment continues", syntax.after(syntax.COMMENT, "still inside", rust), syntax.COMMENT)
+  eq("until it closes", syntax.after(syntax.COMMENT, "done */ code", rust), syntax.CODE)
+  -- A `//` cannot open a block, and nothing after it counts.
+  eq(
+    "a line comment swallows a would-be opener",
+    syntax.after(syntax.CODE, "// /*", rust),
+    syntax.CODE
+  )
+  -- A quote inside a string cannot open a region either.
+  eq("a string hides its contents", syntax.after(syntax.CODE, 'let s = "/*";', rust), syntax.CODE)
+  eq("lua long strings span too", syntax.after(syntax.CODE, "local s = [[", lua_lang), syntax.RAW)
+
+  -- A line STARTING inside a comment is a comment, whatever it looks like.
+  local spans = syntax.spans("let x = 1; still comment", rust, syntax.COMMENT)
+  eq("one span", #spans, 1)
+  eq("all of it comment", spans[1].class, "comment")
+  -- And it stops at the close.
+  local mixed = syntax.spans("done */ let y = 2;", rust, syntax.COMMENT)
+  eq("the comment ends", mixed[1].class, "comment")
+  eq("where it closes", mixed[1].to, 7)
+  local found_keyword = false
+  for _, span in ipairs(mixed) do
+    if span.class == "keyword" then
+      found_keyword = true
+    end
+  end
+  check("and code after it is code again", found_keyword)
+end
+
+print("== a region belongs to one SIDE of the diff ==")
+do
+  local syntax = require("thurbox-code-review.lib.syntax")
+  -- A comment opened in a REMOVED line is not open in the ADDED one: they are
+  -- two versions of the same file. Getting this wrong lights up the rest of any
+  -- hunk that edits a comment.
+  local body = lines_of([[
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,6 +1,6 @@
+ fn main() {
+-    /* old note
+-       continues */
++    /* new note
++       also continues */
+     let x = 1;
+]])
+  local parse = diff.parse("sides", body, 0)
+  local lang_of = function(row)
+    return syntax.lang_of(parse, row.file)
+  end
+
+  --- The region each body line starts in, asked for the way the renderer asks:
+  --- per row, bounded by its hunk.
+  local seen = {}
+  for index, row in ipairs(parse.rows) do
+    if row.kind == "line" then
+      local old_state, new_state = syntax.state_at(parse.rows, index, lang_of)
+      seen[#seen + 1] = row.side .. ":" .. syntax.for_side(row.side, old_state, new_state)
+    end
+  end
+  eq("context starts in code", seen[1], "ctx:code")
+  eq("the removed opener starts in code", seen[2], "del:code")
+  eq("its continuation is inside a comment", seen[3], "del:comment")
+  eq("the ADDED opener also starts in code", seen[4], "add:code")
+  eq("its own continuation is inside its own comment", seen[5], "add:comment")
+  eq("and the context after both is code again", seen[6], "ctx:code")
+end
+
+print("== a hunk starts fresh, because its context is missing ==")
+do
+  local syntax = require("thurbox-code-review.lib.syntax")
+  local body = lines_of([[
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,2 +1,2 @@
+ /* opened here
+ and never closed
+@@ -40,2 +40,2 @@
+ let y = 2;
+ fn other() {}
+]])
+  local parse = diff.parse("hunks", body, 0)
+  local lang_of = function(row)
+    return syntax.lang_of(parse, row.file)
+  end
+  local states = {}
+  for index, row in ipairs(parse.rows) do
+    if row.kind == "line" then
+      local old_state, new_state = syntax.state_at(parse.rows, index, lang_of)
+      states[#states + 1] = syntax.for_side(row.side, old_state, new_state)
+    end
+  end
+  eq("the first line is code", states[1], "code")
+  eq("the second is inside the comment it opened", states[2], "comment")
+  -- The second hunk is elsewhere in the file, with the closing `*/` in lines git
+  -- never printed. Carrying the state there would be confidently wrong.
+  eq("the next HUNK starts fresh", states[3], "code")
+  eq("and stays code", states[4], "code")
 end
 
 print("== the epoch invalidates ==")

@@ -120,3 +120,33 @@ ever hands the lexer the forty-odd lines it is about to paint.
 That is the number behind the design's claim that highlighting is "a property of
 the cells the plugin produces". It is not merely possible without a kernel
 change; it is cheap enough that the question never comes up.
+
+## The highlighter, and the version of it that would have killed the pane
+
+Per-language keywords and regions that outlive a line (block comments,
+multi-line strings) were added in two steps, and the first one was fatal:
+
+| version | cost on a capped diff |
+|---|---|
+| walk every row, `string.sub` per byte | **1444 batches** — 7x the 200 the kernel allows |
+| walk back to the hunk, `string.find` to jump | 3.80–4.15 batches/frame |
+| …with the lookback bounded to 400 lines | **1.30–1.65 batches/frame** |
+
+Three separate mistakes, and they are worth separating because they are the three
+ways this kind of code goes wrong:
+
+1. **Scope.** Recording the region state for every row of the parse is O(diff),
+   and an editor gets away with it only because it has the whole document and no
+   frame deadline. The state is needed for the FORTY lines on screen, so it is
+   computed for those, walking back only as far as the enclosing hunk header.
+2. **Method.** Testing every byte position against every marker with
+   `string.sub` is four allocations per character. `string.find(…, plain)` jumps
+   to the next interesting position instead, which is the same algorithm with the
+   inner loop deleted.
+3. **Worst case.** A hunk is normally tens of lines and can be fifty thousand.
+   `MAX_LOOKBACK = 400` caps what one frame can be asked to walk; past it the
+   state is taken as code, which is wrong in the direction of plain text.
+
+The lesson is the same one this file already records about the parse: **the
+budget is not what bounds this, the frame is** — and an O(diff) pass is a bug
+however cheap its inner loop, because the diff is a hundred thousand rows.
