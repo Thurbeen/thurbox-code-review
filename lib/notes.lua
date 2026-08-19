@@ -164,30 +164,52 @@ local function anchor_key(note)
   return nil
 end
 
---- The key a ROW would answer to, so a note can be found for it in one lookup.
+--- Every key a ROW answers to, so a note can be found for it by lookup.
 ---
 --- Indexed rather than scanned: a linear search per row is O(rows x notes), and
 --- `rows` is up to a hundred thousand.
-local function row_key(parse, row)
+---
+--- A row can answer to TWO keys, and that is the point of returning a list. A
+--- paired row carries a deletion and the addition that replaced it, so a note
+--- written on either side in the unified layout has to find it — the first
+--- version keyed a pair by its new side alone, and a note made on a deletion
+--- disappeared the moment you pressed `v`. It was still stored and still
+--- exported, which is the worst way for it to be missing.
+local function row_keys(parse, row, into)
   local file = row.file and parse.files[row.file]
   if not file then
-    return nil
+    return into
   end
   if row.kind == "file" then
-    return file.path .. "\1file"
+    into[#into + 1] = file.path .. "\1file"
+    return into
   end
-  local line = nil
+
+  local function add(line)
+    if not line then
+      return
+    end
+    local side = line.new_no and "new" or "old"
+    local number = line.new_no or line.old_no
+    local key = file.path .. "\1" .. side .. "\1" .. tostring(number)
+    -- A context line pairs with ITSELF, so both halves of the pair are the same
+    -- row and would otherwise place the note twice.
+    for _, held in ipairs(into) do
+      if held == key then
+        return
+      end
+    end
+    into[#into + 1] = key
+  end
+
   if row.kind == "line" then
-    line = row
+    add(row)
   elseif row.kind == "pair" then
-    line = parse.rows[row.new or row.old]
+    -- Old first: it is the left column, and it reads first.
+    add(row.old and parse.rows[row.old])
+    add(row.new and parse.rows[row.new])
   end
-  if not line then
-    return nil
-  end
-  local side = line.new_no and "new" or "old"
-  local number = line.new_no or line.old_no
-  return file.path .. "\1" .. side .. "\1" .. tostring(number)
+  return into
 end
 
 -- ── interleaving ────────────────────────────────────────────────────────────
@@ -223,15 +245,19 @@ function M.interleave(parse, base, list, signature)
     end
   end
 
-  local out = {}
+  local out, keys = {}, {}
   for index = 1, #base do
     local row = base[index]
     out[#out + 1] = row
-    local at = row_key(parse, row)
-    local bucket = at and by_key[at]
-    if bucket then
-      for _, note in ipairs(bucket) do
-        out[#out + 1] = { kind = "note", file = row.file, note = note }
+    for at = #keys, 1, -1 do
+      keys[at] = nil
+    end
+    for _, at in ipairs(row_keys(parse, row, keys)) do
+      local bucket = by_key[at]
+      if bucket then
+        for _, note in ipairs(bucket) do
+          out[#out + 1] = { kind = "note", file = row.file, note = note }
+        end
       end
     end
   end

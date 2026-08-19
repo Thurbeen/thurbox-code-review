@@ -1131,6 +1131,49 @@ do
   end
   check("a note shows even when another file is folded", drawn)
 
+  -- A note on a LINE sits directly under that line, which is the whole point of
+  -- anchoring one — and it has to stay there when the layout changes, because
+  -- the row it attaches to is a different row in the paired list. The join is by
+  -- (path, side, number), so it survives; asserted rather than assumed.
+  forget("s1")
+  render()
+  plugin.on_action("review.top")
+  for _ = 1, 3 do
+    plugin.on_action("review.next") -- onto a body line
+  end
+  plugin.on_action("review.comment")
+  type_in("right under this line")
+  plugin.on_action("review.find_commit")
+
+  --- The body line before the note, in whatever layout is on.
+  local function line_above_note()
+    local body, previous = body_texts(render()), nil
+    for _, text in ipairs(body) do
+      if text:find("right under this line", 1, true) then
+        return previous
+      end
+      previous = text
+    end
+    return nil
+  end
+
+  local unified_above = line_above_note()
+  check("the note has a line above it", unified_above ~= nil)
+  check(
+    "which is a body line, not a header",
+    (unified_above or ""):find("old line", 1, true) ~= nil,
+    tostring(unified_above)
+  )
+
+  plugin.on_action("review.side")
+  local side_above = line_above_note()
+  check(
+    "side by side, it is still under a line",
+    (side_above or ""):find("old line", 1, true) ~= nil,
+    tostring(side_above)
+  )
+  plugin.on_action("review.side")
+
   -- A SUMMARY note belongs to no file, so the fold filter has to keep it when
   -- anything is folded — which is the state a reviewer is most likely to be
   -- writing one in.
