@@ -192,6 +192,58 @@ end
 --- exist.
 local GIT = "git -c core.quotepath=false"
 
+--- Untracked files the working diff will show a patch for, before it stops.
+---
+--- `git diff --no-index` takes exactly two paths, so an untracked file costs a
+--- process — and a worktree with an unignored `target/` or `node_modules` would
+--- otherwise cost thousands, half of which the 30-second timeout would kill,
+--- leaving a truncated capture that parses as a perfectly good short diff. The
+--- bound is here so that outcome is a SENTENCE on screen instead.
+M.MAX_UNTRACKED = 200
+
+--- The shell that walks the untracked files, given what to run for each.
+---
+--- Why a loop at all: `git diff HEAD` does not see a file git has never been
+--- told about, and "uncommitted changes" that omit the three files the agent
+--- just wrote is the wrong answer to the question the target is asking. v1 had
+--- this gap too (`git::diff_working_on` is `diff --no-color HEAD`), and so does
+--- the kernel's own working diff — recorded in KERNEL-GAPS.md, because the pane
+--- can only fix the half it runs itself.
+---
+--- Why not the one-process alternative: a scratch `GIT_INDEX_FILE` plus
+--- `git add -A` gives the whole thing — untracked, renames, odd filenames — in a
+--- single `git diff --cached HEAD`. It also **writes loose objects into the
+--- repository being reviewed**, and it would do so every few seconds while an
+--- agent edits in that worktree. A review pane reads; it does not write to the
+--- thing it is reading. Measured: three new objects for three changed files.
+---
+--- `IFS` is set to a newline so a path with SPACES survives word splitting. A
+--- path containing a literal newline does not, and that file is missing from the
+--- review — the one case this does not handle, named here rather than discovered.
+local function untracked_loop(each)
+  return table.concat({
+    "IFS='\n'",
+    "n=0",
+    "for f in $(" .. GIT .. " ls-files --others --exclude-standard); do",
+    "  n=$((n+1))",
+    '  if [ "$n" -le ' .. M.MAX_UNTRACKED .. " ]; then",
+    -- `|| true`: `--no-index` exits 1 whenever the two sides differ, which for a
+    -- new file is always. Its failure and its success look the same, so the
+    -- status is not information and is discarded here rather than mistaken for
+    -- one further up.
+    "    " .. each .. ' -- /dev/null "$f" || true',
+    "  fi",
+    "done",
+  }, "\n")
+end
+
+--- The marker the file-list command ends with, so Lua learns the untracked TOTAL
+--- even when the loop stopped short of it.
+---
+--- Read from the LAST field only, which is the one this wrote — a path that
+--- happened to spell the same thing cannot be last, because the marker is.
+local MARKER = "thurbox-untracked"
+
 local function programs(session, target)
   local base = session.base_branch
   if target.kind == "commit" then
@@ -199,9 +251,22 @@ local function programs(session, target)
     return GIT .. " show --no-color --format= " .. sha,
       GIT .. " show --no-color --format= --numstat --raw -M -z " .. sha
   end
-  -- `HEAD` for the working changes, matching `git::working_diff`: staged and
-  -- unstaged together, which is what "what have I not committed" means.
-  local range = target.kind == "working" and "HEAD" or quoted((base or "HEAD") .. "..HEAD")
+  if target.kind == "working" then
+    -- `HEAD` for the tracked half, matching `git::working_diff`: staged and
+    -- unstaged together, which is what "what have I not committed" means. Then
+    -- every untracked file, which is the half `git diff` cannot be asked for.
+    --
+    -- `|| exit $?` on the FIRST command only: if the tracked diff fails the
+    -- whole answer is wrong and must say so, where a single untracked file
+    -- failing is one file missing from a diff that is otherwise correct.
+    local head = GIT .. " diff --no-color HEAD"
+    local listed = GIT .. " diff --no-color --numstat --raw -M -z HEAD"
+    return head .. " || exit $?\n" .. untracked_loop(GIT .. " diff --no-color --no-index"),
+      listed .. " || exit $?\n" .. untracked_loop(
+        GIT .. " diff --no-color --numstat --raw -M -z --no-index"
+      ) .. "\nprintf '\\0" .. MARKER .. ' %s\\0\' "$n"'
+  end
+  local range = quoted((base or "HEAD") .. "..HEAD")
   return GIT .. " diff --no-color " .. range,
     GIT .. " diff --no-color --numstat --raw -M -z " .. range
 end
@@ -266,88 +331,112 @@ end
 
 --- The changed-file list, in `thurbox.diffs[id].files`' exact shape.
 ---
---- One command gives both halves: `--raw` records come first and carry the status
---- letter, `--numstat` records follow and carry the counts, and a record starting
---- with `:` is a raw one. The kernel runs `--name-status` and `--numstat`
---- separately and joins them by path (`session::review::parse_changed_files`);
---- this joins the same two things the same way, from one process instead of two,
---- because a run costs a process and the raw header's status field is the
---- name-status letter by another name.
+--- One command gives both halves: `--raw` records carry the status letter and
+--- `--numstat` records carry the counts, and a record starting with `:` is a raw
+--- one. The kernel runs `--name-status` and `--numstat` separately and joins them
+--- by path (`session::review::parse_changed_files`); this joins the same two
+--- things the same way, from one process instead of two, because the raw header's
+--- status field is the name-status letter by another name.
+---
+--- Dispatched PER FIELD rather than in two phases. The first version read every
+--- leading `:` record and then treated the rest as numstat, which is the shape
+--- `git diff` alone produces — and the working target appends one `--no-index`
+--- call per untracked file, so the stream becomes raw, numstat, raw, numstat…
+--- and the two-phase reader stopped at the first interleaved header and dropped
+--- every untracked file from the list. They were in the body and absent from the
+--- list beside it.
+---
+--- Returns the list, and the untracked TOTAL when the command reported one.
 function M.parse_files(text)
   local list = fields_of(text)
-  local at, statuses = 1, {}
+  local statuses, out, untracked = {}, {}, nil
+  local at = 1
+
+  -- The marker the working command ends with. Read from the last field only,
+  -- which is the field this pane wrote.
+  --
+  -- Compared as TEXT, not matched as a pattern. `thurbox-untracked` contains a
+  -- hyphen, and a hyphen in a Lua pattern is a lazy quantifier — so
+  -- `string.match(last, "^" .. MARKER .. " (%d+)$")` never matched its own
+  -- marker, and the count came back nil with nothing to say why. The same trap
+  -- as reading `[▸▾]` as a character class, which is a set of BYTES.
+  local prefix = MARKER .. " "
+  local last = list[#list]
+  if last and string.sub(last, 1, #prefix) == prefix then
+    untracked = tonumber(string.sub(last, #prefix + 1))
+    if untracked then
+      list[#list] = nil
+    end
+  end
 
   while at <= #list do
     local field = list[at]
-    if string.sub(field, 1, 1) ~= ":" then
-      break
-    end
-    -- `:100644 100644 de98044 d68dd40 R075` — the status is the last token.
-    local letter = string.match(field, "([^%s]+)%s*$") or "M"
-    local head = string.sub(letter, 1, 1)
     at = at + 1
-    if head == "R" or head == "C" then
-      local old, new = list[at], list[at + 1]
-      at = at + 2
-      if not new then
-        break
-      end
-      statuses[new] = { status = "R", old_path = old }
-    else
-      local path = list[at]
-      at = at + 1
-      if not path then
-        break
-      end
-      local status = "M"
-      if head == "A" then
-        status = "A"
-      elseif head == "D" then
-        status = "D"
-      end
-      statuses[path] = { status = status }
-    end
-  end
 
-  local out = {}
-  while at <= #list do
-    local record = list[at]
-    at = at + 1
-    local added, removed, path = string.match(record, "^([^\t]*)\t([^\t]*)\t(.*)$")
-    if not added then
-      break
-    end
-    if path == "" then
-      -- A rename: the next two records are the old and the new name. `-z` is
-      -- what makes that unambiguous, which is why the kernel uses it too.
-      local new = list[at + 1]
-      at = at + 2
-      if not new then
+    if string.sub(field, 1, 1) == ":" then
+      -- `:100644 100644 de98044 d68dd40 R075` — the status is the last token.
+      local letter = string.match(field, "([^%s]+)%s*$") or "M"
+      local head = string.sub(letter, 1, 1)
+      if head == "R" or head == "C" then
+        local old, new_path = list[at], list[at + 1]
+        at = at + 2
+        if not new_path then
+          break
+        end
+        statuses[new_path] = { status = "R", old_path = old }
+      else
+        local path = list[at]
+        at = at + 1
+        if not path then
+          break
+        end
+        local status = "M"
+        if head == "A" then
+          status = "A"
+        elseif head == "D" then
+          status = "D"
+        end
+        statuses[path] = { status = status }
+      end
+    else
+      local added, removed, path = string.match(field, "^([^\t]*)\t([^\t]*)\t(.*)$")
+      if not added then
         break
       end
-      path = new
+      if path == "" then
+        -- A rename: the next two records are the old and the new name. `-z` is
+        -- what makes that unambiguous, which is why the kernel uses it too. An
+        -- untracked file arrives in this shape as well — `--no-index` names
+        -- `/dev/null` as its old side — and the new side is what it is called.
+        local new_path = list[at + 1]
+        at = at + 2
+        if not new_path then
+          break
+        end
+        path = new_path
+      end
+      local known = statuses[path] or {}
+      out[#out + 1] = {
+        path = path,
+        -- `-` for a binary file: it changed, and it has no line counts.
+        added = tonumber(added) or 0,
+        removed = tonumber(removed) or 0,
+        status = known.status or "M",
+        old_path = known.old_path,
+      }
     end
-    local known = statuses[path] or {}
-    out[#out + 1] = {
-      path = path,
-      -- `-` for a binary file: it changed, and it has no line counts.
-      added = tonumber(added) or 0,
-      removed = tonumber(removed) or 0,
-      status = known.status or "M",
-      old_path = known.old_path,
-    }
   end
-  return out
+  return out, untracked
 end
 
 local function files_of(key, text)
   local held = files_cache[key]
   if held and held.text == text then
-    return held.files
+    return held.files, held.untracked
   end
-  local list = M.parse_files(text)
-  files_cache[key] = { text = text, files = list }
-  return list
+  local list, untracked = M.parse_files(text)
+  files_cache[key] = { text = text, files = list, untracked = untracked }
+  return list, untracked
 end
 
 -- ── the entry ───────────────────────────────────────────────────────────────
@@ -421,9 +510,16 @@ function M.entry(session, target, kernel, refresh)
     return failed(why(body))
   end
 
+  local listed, untracked = files_of(stem, files.stdout or "")
   return {
     state = "ready",
-    files = files_of(stem, files.stdout or ""),
+    files = listed,
+    -- How many untracked files the loop did not reach, so the pane can say so.
+    -- Not folded into `truncated`: the PATCH being capped and the LIST being
+    -- short are two different incomplete things, and a reviewer needs to know
+    -- which one they are looking at.
+    untracked_cut = (untracked and untracked > M.MAX_UNTRACKED) and (untracked - M.MAX_UNTRACKED)
+      or nil,
     body = lines_of(stem, body.stdout or "", body.truncated == true),
     truncated = body.truncated == true,
     -- Unknown, and left unknown: a cut capture cannot say how big the whole was,
@@ -557,5 +653,10 @@ function M.forget(session)
     end
   end
 end
+
+--- Exported for the tests: the exact command lines this asks `sh` to run, which
+--- are the one part of this module that a Lua test cannot execute and a shell
+--- test can.
+M.__programs = programs
 
 return M

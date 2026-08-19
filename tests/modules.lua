@@ -87,6 +87,9 @@ end
 local function eq(name, got, want)
   check(name, got == want, string.format("got %s, want %s", tostring(got), tostring(want)))
 end
+local function has_text(name, text, needle)
+  check(name, string.find(text, needle, 1, true) ~= nil, "missing " .. needle)
+end
 
 -- ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -850,6 +853,81 @@ do
   eq("and no removals", one[1] and one[1].removed, 0)
 
   eq("nothing changed is no files", #target.parse_files(""), 0)
+end
+
+print("== the working target lists untracked files too ==")
+do
+  -- Captured from a real run of the command `lib/target.lua` builds, over a
+  -- worktree with a deletion, a modification, a modified path CONTAINING A
+  -- SPACE, and two untracked files — one of them `.gitignore` itself. The
+  -- gitignored `skip.log` is absent, which is `--exclude-standard` working.
+  --
+  -- Note the shape: `git diff` emits all its raw records then all its numstat
+  -- ones, and each `--no-index` call for an untracked file appends its own
+  -- raw/numstat PAIR. So the stream interleaves, which the two-phase reader this
+  -- replaced could not survive.
+  local captured = table.concat({
+    ":100644 000000 286c5f5 0000000 D\0removed.txt\0",
+    ":100644 100644 5786b13 0000000 M\0sub dir/with space.txt\0",
+    ":100644 100644 422c2b7 0000000 M\0tracked.txt\0",
+    "0\t1\tremoved.txt\0",
+    "1\t1\tsub dir/with space.txt\0",
+    "1\t1\ttracked.txt\0",
+    ":000000 100644 0000000 0000000 A\0.gitignore\0",
+    "1\t0\t\0/dev/null\0.gitignore\0",
+    ":000000 100644 0000000 0000000 A\0fresh.txt\0",
+    "1\t0\t\0/dev/null\0fresh.txt\0",
+    "\0thurbox-untracked 2\0",
+  })
+  local files, untracked = target.parse_files(captured)
+  eq("five files", #files, 5)
+  eq("the deletion", files[1].path .. " " .. files[1].status, "removed.txt D")
+  eq("a path with a space survives", files[2].path, "sub dir/with space.txt")
+  eq("the modification", files[3].path .. " " .. files[3].status, "tracked.txt M")
+  -- The two untracked ones, which `git diff HEAD` alone would not have named at
+  -- all. `--no-index` reports them in the RENAME shape — an empty path field
+  -- followed by `/dev/null` and the real name — so the new side is the answer.
+  eq("an untracked file is listed", files[4].path, ".gitignore")
+  eq("as an addition", files[4].status, "A")
+  eq("with its line count", files[4].added .. "/" .. files[4].removed, "1/0")
+  eq("and it is not a rename", files[4].old_path, nil)
+  eq("the second untracked file too", files[5].path, "fresh.txt")
+  eq("the untracked total is read back", untracked, 2)
+
+  -- The marker is the LAST field and is never a file.
+  for _, file in ipairs(files) do
+    check("no file is called the marker", not string.find(file.path, "thurbox-untracked", 1, true))
+  end
+
+  -- No marker at all — every other target's command — reads as "not counted"
+  -- rather than as zero, so the pane cannot report a bound that never applied.
+  local _, none = target.parse_files(":100644 100644 aaa bbb M\0one.lua\0" .. "1\t1\tone.lua\0")
+  eq("a command without the marker reports nothing", none, nil)
+end
+
+print("== the command that finds them ==")
+do
+  local session = { id = "s1", base_branch = "main" }
+  local body, files = target.__programs(session, { kind = "working" })
+  -- The tracked half is `git::working_diff`'s own command, unchanged.
+  has_text("the tracked half is git diff HEAD", body, "diff --no-color HEAD")
+  -- And it is the one whose failure is fatal: a broken repository must not read
+  -- as "nothing uncommitted".
+  has_text("whose failure ends the command", body, "|| exit $?")
+  has_text("then every untracked file", body, "ls-files --others --exclude-standard")
+  has_text("diffed against nothing", body, "--no-index -- /dev/null")
+  -- `--no-index` exits 1 whenever the sides differ, which for a new file is
+  -- always, so its status is not information.
+  has_text("whose status is not information", body, "|| true")
+  has_text("bounded", body, "-le " .. target.MAX_UNTRACKED)
+  has_text("the list is bounded the same way", files, "-le " .. target.MAX_UNTRACKED)
+  has_text("and reports the total it saw", files, "thurbox-untracked")
+
+  -- The other two targets do NOT pay for any of this.
+  local branch = target.__programs(session, { kind = "branch" })
+  check("the branch target runs one command", not string.find(branch, "ls-files", 1, true))
+  local commit = target.__programs(session, { kind = "commit", sha = "abc1234" })
+  check("and so does a commit", not string.find(commit, "ls-files", 1, true))
 end
 
 print("== a capture that was cut is cut on a LINE ==")

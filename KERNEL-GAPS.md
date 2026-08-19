@@ -174,6 +174,22 @@ it, and says so.
 not, so the last line of a truncated one is dropped rather than parsed as a real
 addition of a line that does not exist.
 
+**And one the kernel still has: `diff_working_on` omits untracked files.**
+`git::diff_working_on` is `["diff", "--no-color", "HEAD"]`, which cannot show a
+file git has never been told about. That is what a session with **no base
+branch** gets by default, and it is what v1 showed too — so an agent that has
+just written three new files reports as having changed nothing at all, which is
+the most common thing an agent does.
+
+This pane fixes the half it runs itself (the `working` target walks
+`ls-files --others --exclude-standard` and diffs each against `/dev/null`), and
+cannot fix the kernel's. Worth doing there, and worth doing the same way rather
+than with a scratch `GIT_INDEX_FILE` plus `git add -A`: that gets everything in
+one process and **writes loose objects into the repository being reviewed**,
+which for a pane refreshing every few seconds against a worktree an agent is
+editing is a side effect nobody asked for. Measured: three new objects for three
+changed files.
+
 **What is still worse than the kernel doing it.** A run answer is keyed
 `(plugin, key)` and evicted only when the plugin goes, so visiting N commits
 retains up to N x 256 KiB for the life of the process (30 commits is ~7.5 MB

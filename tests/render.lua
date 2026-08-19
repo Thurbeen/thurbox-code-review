@@ -1472,6 +1472,80 @@ do
   forget("s1")
 end
 
+print("== the working target shows untracked files ==")
+do
+  forget("s1")
+  forget_runs()
+  grant_run(true)
+  snapshot(ready(2, 3))
+  render()
+
+  target_lib.set(state, "s1", { kind = "working" })
+  answers("rv:s1:working:files", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = table.concat({
+      ":100644 100644 aaa bbb M\0src/tracked.lua\0",
+      "1\t1\tsrc/tracked.lua\0",
+      ":000000 100644 0000000 0000000 A\0src/brand-new.lua\0",
+      "2\t0\t\0/dev/null\0src/brand-new.lua\0",
+      "\0thurbox-untracked 1\0",
+    }),
+  })
+  answers("rv:s1:working:body", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = table.concat({
+      "diff --git a/src/tracked.lua b/src/tracked.lua",
+      "--- a/src/tracked.lua",
+      "+++ b/src/tracked.lua",
+      "@@ -1,1 +1,1 @@",
+      "-local was = 1",
+      "+local now = 2",
+      "diff --git a/src/brand-new.lua b/src/brand-new.lua",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/src/brand-new.lua",
+      "@@ -0,0 +1,2 @@",
+      "+local fresh = true",
+      "+return fresh",
+      "",
+    }, "\n"),
+  })
+  render()
+  local drawn = joined(render())
+  has("the tracked file is listed", drawn, "tracked.lua")
+  -- The point of the whole exercise: `git diff HEAD` cannot see this file, so
+  -- without the untracked half a reviewer would be told the agent wrote nothing.
+  has("and so is the untracked one", drawn, "brand-new.lua")
+  has("as an addition", drawn, "A brand-new.lua")
+  has("with its counts", drawn, "+2 -0")
+  local lines = table.concat(body_texts(render()), "\n")
+  has("its contents are in the body", lines, "local fresh = true")
+  hasnt("and nothing says the list is short", drawn, "more untracked files")
+
+  -- More untracked files than the loop walks: the LIST is short, which is not
+  -- the same failure as a capped patch and does not read like one.
+  answers("rv:s1:working:files", {
+    state = "done",
+    ok = true,
+    truncated = false,
+    stdout = ":000000 100644 0 0 A\0one.txt\0"
+      .. "1\t0\t\0/dev/null\0one.txt\0"
+      .. "\0thurbox-untracked 260\0",
+  })
+  local short = joined(render())
+  has("a bounded list says how many it missed", short, "60 more untracked files")
+  hasnt("and does not call it a capped patch", short, "the patch is capped")
+
+  target_lib.set(state, "s1", nil)
+  grant_run(false)
+  forget_runs()
+  forget("s1")
+end
+
 print("== where you are is per target ==")
 do
   forget("s1")

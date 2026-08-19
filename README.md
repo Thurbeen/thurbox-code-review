@@ -111,6 +111,20 @@ kernel's diff exactly as it did before there was a picker — `t` still opens, a
 names the choices it cannot serve rather than hiding them. **Nothing is run until
 you open the picker**, and nothing at all for the target the kernel already has.
 
+**Uncommitted means uncommitted, including files git has never seen.** `git diff
+HEAD` does not show an untracked file, and writing new files is most of what an
+agent does — so a working diff without them is the wrong answer to the question
+the target is asking. Each one is diffed against nothing (`--no-index`), which
+costs a process apiece, so the walk stops at 200 and says how many it did not
+reach. Ignored files stay out, and the repository is never written to: the
+one-process alternative (a scratch `GIT_INDEX_FILE` plus `git add -A`) puts loose
+objects in the repo you are reviewing, every few seconds, while an agent edits in
+it.
+
+The kernel's own working diff — what a session with **no base branch** shows by
+default — still omits untracked files, because that is `git::diff_working_on` and
+this pane cannot reach it. `KERNEL-GAPS.md` §4 has it.
+
 Two sources for one diff is a real cost and the pane does not pretend otherwise:
 
 - **The cap differs.** The kernel cuts a body at 4 MiB; a run's output is cut at

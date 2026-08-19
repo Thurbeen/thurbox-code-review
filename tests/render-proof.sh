@@ -493,10 +493,18 @@ shot 37-list-follows-again 1.0
 log "the target picker"
 cd "$WORKTREE"
 # Something uncommitted, so `working` is a different diff from the branch's and
-# from any commit's. A TRACKED file, edited: `git diff HEAD` does not see an
-# untracked one, so a new file would have proved only that the empty state still
-# says "No changes" — true, and not what this section is for.
+# from any commit's. Both halves of it:
+#
+#   - a TRACKED file edited, which `git diff HEAD` sees;
+#   - an UNTRACKED file, which it does not — and which is the half an agent
+#     produces most often, since writing a new file is what it spends its time
+#     doing. A working diff that omits those is the wrong answer to the question.
+#   - and an ignored one, which must stay out of both.
 printf 'uncommitted line\n' >> docs/renamed.md
+mkdir -p "src/new dir"
+printf 'local fresh = true\nreturn fresh\n' > "src/new dir/untracked.lua"
+printf 'build noise\n' > debug.log
+printf '*.log\n' > .gitignore
 
 select_session "$(python3 -c "import json;d=json.load(open('$OUT/session.json'));print(d.get('id') or d['session']['id'])")"
 send F7
