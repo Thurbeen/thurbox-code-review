@@ -40,6 +40,8 @@
 -- upgrade. `KERNEL-GAPS.md` beside this file states the exact read and command
 -- that would close it.
 
+local hover = require("lib.hover")
+local panels = require("lib.panels")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -439,6 +441,166 @@ local function matches(id, parse, in_force, needle)
   return list
 end
 
+-- ── the session-column toggle on the border ─────────────────────────────────
+--
+-- v1 paints the collapse chevron on the LEFT of the central pane's top border,
+-- and it is there on every central view — the review included. The agent pane
+-- draws it in v2; this pane replacing the agent in the same slot must draw it
+-- too, or `F9` and its arrow vanish from the screen for as long as you are
+-- reading a diff. A affordance that exists on one occupant of a slot and not
+-- the next is worse than one that exists on neither.
+--
+-- Duplicated from `20_agent.lua` rather than shared, for the reason that file
+-- gives for duplicating `compact_chord`: a pane is meant to be replaceable on
+-- its own, and a `lib` entry read by two panes makes swapping either one a
+-- two-file edit.
+
+--- Cells the padded chevron segment (` ◀ `) occupies, so the accent chevron and
+--- the muted ` F9 ` hint are styled apart — v1 `COLLAPSE_CHEVRON_CELLS`.
+local COLLAPSE_CHEVRON_CELLS = 3
+--- v1 `COLLAPSE_TOGGLE_MIN_WIDTH`: narrower than this and even a bare chevron
+--- has nowhere to go.
+local COLLAPSE_TOGGLE_MIN_WIDTH = 5
+--- v1 `COLLAPSE_HINT_MIN_WIDTH`: below it the toggle is chevron-only, to save
+--- border space for the title.
+local COLLAPSE_HINT_MIN_WIDTH = 40
+--- The action the chevron performs. Named once: it is the click verb, the hover
+--- key and what the shortcut is looked up by.
+local COLLAPSE = "sessions.toggle_panel"
+
+--- v1 renders a chord compactly: `^Q`, `⇧J`, `F7`. Mirrors `KeyChord::compact`.
+local function compact_chord(chord)
+  local modifiers, key = "", chord
+  while true do
+    local prefix, rest = string.match(key, "^(%a+)%+(.*)$")
+    if not prefix then
+      break
+    end
+    local symbol = ({ ctrl = "^", shift = "⇧", alt = "⌥", cmd = "⌘" })[prefix]
+    if not symbol then
+      break
+    end
+    modifiers = modifiers .. symbol
+    key = rest
+  end
+  if widgets.len(key) == 1 then
+    key = string.upper(key)
+  elseif widgets.len(key) > 1 then
+    key = string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2)
+  end
+  return modifiers .. key
+end
+
+--- The chord bound to an action, preferring a bare F-key.
+---
+--- Read from the registry rather than written here, so rebinding the toggle
+--- relabels the border without this file knowing.
+local function shortcut_for(action)
+  local first
+  for _, binding in ipairs((thurbox and thurbox.registry and thurbox.registry.keys) or {}) do
+    if binding.action == action and binding.key then
+      if string.match(binding.key, "^f%d+$") then
+        return compact_chord(binding.key)
+      end
+      first = first or binding.key
+    end
+  end
+  return first and compact_chord(first) or nil
+end
+
+--- v1 `session_collapse_toggle_label`: ` ◀ F9 ` while the list is shown
+--- (collapse it leftward), ` ▶ F9 ` while hidden (expand it back). The chevron
+--- points the way the list will move; the hint is dropped on a narrow pane.
+local function collapse_label(width)
+  if width < COLLAPSE_TOGGLE_MIN_WIDTH then
+    return nil
+  end
+  local chevron = panels.shown("sessions") and "◀" or "▶"
+  local hint = width >= COLLAPSE_HINT_MIN_WIDTH and shortcut_for(COLLAPSE) or nil
+  if hint then
+    return " " .. chevron .. " " .. hint .. " "
+  end
+  return " " .. chevron .. " "
+end
+
+--- Keep the FIRST `max` characters, clipping the rest with no marker.
+local function keep_left(text, max)
+  if max <= 0 then
+    return ""
+  end
+  if widgets.len(text) <= max then
+    return text
+  end
+  return rows.slice(text, 1, max)
+end
+
+--- The chevron and its hint as border runs, both carrying the same click verb.
+---
+--- Two runs because a run is one node and a node has one style — the chevron
+--- reads accent and the hint muted — but the SAME role, so the kernel hit-tests
+--- them as one target. Without that the hint is inert: not clickable, and not
+--- lit when the pointer is over it, which makes a six-cell label feel like it
+--- has a three-cell hitbox in the middle.
+local function collapse_runs(width)
+  local label = collapse_label(width)
+  if not label then
+    return {}
+  end
+  -- v1: "a button by action but a bare border glyph by look", so both runs take
+  -- the subtle band together — a filled pill here would invent a chip on the
+  -- border where v1 draws none, and half a lit button is worse than none.
+  local band = hover.role("action:" .. COLLAPSE) and theme.role("selection_bg") or nil
+  local out = {
+    {
+      text = keep_left(label, COLLAPSE_CHEVRON_CELLS),
+      style = { fg = theme.accent, bg = band },
+      role = "action:" .. COLLAPSE,
+    },
+  }
+  local hint = rows.slice(label, COLLAPSE_CHEVRON_CELLS + 1, widgets.len(label))
+  if hint ~= "" then
+    out[#out + 1] = {
+      text = hint,
+      style = { fg = theme.muted, bg = band },
+      role = "action:" .. COLLAPSE,
+    }
+  end
+  return out
+end
+
+--- The top border as a NODE, not a run list.
+---
+--- Identity is per NODE, so a chip painted as one span among many can never be a
+--- click target however it is styled. When any run carries a `role`, the row
+--- becomes a horizontal box of one text node per run, each with an exact `len`
+--- so the geometry is bit-identical to the single-node form. `20_agent.lua`
+--- learned this the hard way and its comment says so.
+local function top_row_node(runs)
+  local clickable = false
+  for _, run in ipairs(runs) do
+    if run.role then
+      clickable = true
+      break
+    end
+  end
+  if not clickable then
+    return { type = "text", len = 1, text = { runs } }
+  end
+  local children = {}
+  for _, run in ipairs(runs) do
+    local span = widgets.len(run.text)
+    if span > 0 then
+      children[#children + 1] = {
+        type = "text",
+        len = span,
+        role = run.role,
+        text = { { { text = run.text, style = run.style } } },
+      }
+    end
+  end
+  return { type = "box", axis = "horizontal", len = 1, children = children }
+end
+
 -- ── chrome ──────────────────────────────────────────────────────────────────
 
 local function border_style(focused)
@@ -553,7 +715,7 @@ local function chrome(opts)
     type = "box",
     axis = "vertical",
     children = {
-      { type = "text", len = 1, text = { top } },
+      top_row_node(top),
       {
         type = "box",
         axis = "horizontal",
@@ -1096,11 +1258,24 @@ return {
       or { fg = theme.accent }
 
     local function frame(opts)
+      -- The chevron first, then the title: v1 puts the collapse toggle at the
+      -- very left of the central pane's top border, before anything that names
+      -- the view.
+      --
+      -- Separated by a BORDER cell rather than a space. That is the grammar the
+      -- agent pane sets and the reason it gives: a gap drawn in the border's own
+      -- colour makes the two read as sitting ON the border, where two spaces
+      -- read as one run of padding and the chevron stops looking like a button.
+      local left = collapse_runs(width)
+      if #left > 0 then
+        left[#left + 1] = { text = ROUNDED.h, style = edge }
+      end
+      left[#left + 1] = { text = " Code review ", style = title_style }
       return chrome({
         width = width,
         height = height,
         border = edge,
-        left = { { text = " Code review ", style = title_style } },
+        left = left,
         right = opts.right,
         right_column = opts.right_column,
         footer = footer(width, opts.ready == true),

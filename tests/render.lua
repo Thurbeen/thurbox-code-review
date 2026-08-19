@@ -135,7 +135,14 @@ local function snapshot(diff)
     sessions = { SESSION },
     diffs = diff and { s1 = diff } or {},
     theme = { name = "test", roles = roles },
-    registry = { settings = settings, keys = {} },
+    -- The registry the pane reads chords out of. `sessions.toggle_panel` is
+    -- here because the border's `F9` hint is looked up rather than written —
+    -- rebinding the toggle relabels the border, so an empty registry correctly
+    -- draws a chevron with no chord and would make that assertion vacuous.
+    registry = {
+      settings = settings,
+      keys = { { action = "sessions.toggle_panel", key = "f9", plugin = "sessions" } },
+    },
     settings = {},
     -- The interface's own inventory, which is how the pane finds what shares
     -- its slot. Two occupants of `center`, as the stock arrangement has.
@@ -857,13 +864,70 @@ do
   diff.forget("s1")
 end
 
+print("== the session-column toggle is on the border ==")
+do
+  -- v1 paints the collapse chevron on the left of the CENTRAL pane's top border,
+  -- on every central view. This pane replaces the agent in that slot, so without
+  -- it `F9` and its arrow vanish from the screen for as long as you read a diff.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+  snapshot(ready(2, 3))
+
+  --- Every node carrying a click verb, with the text it draws.
+  local function verbs(node)
+    local out = {}
+    walk(node, function(item)
+      if item.role and item.role:match("^action:") then
+        local parts = {}
+        for _, line in ipairs(type(item.text) == "table" and item.text or {}) do
+          for _, run in ipairs(line) do
+            parts[#parts + 1] = run.text or ""
+          end
+        end
+        out[#out + 1] = { role = item.role, text = table.concat(parts), len = item.len }
+      end
+    end)
+    return out
+  end
+
+  local found = verbs(render())
+  check("the chevron carries a click verb", #found >= 1, "found " .. #found)
+  for _, hit in ipairs(found) do
+    eq("and it is the session toggle", hit.role, "action:sessions.toggle_panel")
+    check("with an exact width, so the geometry is unchanged", hit.len ~= nil)
+  end
+  -- Two runs, ONE target: the chevron reads accent and the hint muted, but both
+  -- carry the same verb so the kernel hit-tests them as one button. Split
+  -- differently, the hint is inert and the label feels like it has a hole.
+  eq("chevron and hint are both targets", #found, 2)
+
+  local drawn = joined(render())
+  check("the arrow points the way the list will move", drawn:find("◀", 1, true) ~= nil)
+  check("and the chord is named", drawn:find("F9", 1, true) ~= nil)
+
+  -- Collapsed, it points the other way.
+  store_backing["panels.sessions"] = false
+  check("collapsed, it points back", joined(render()):find("▶", 1, true) ~= nil)
+  store_backing["panels.sessions"] = nil
+
+  -- Narrow: the hint goes before the chevron does, and below the floor both do.
+  local narrow = joined(render({ width = 30, height = 20, focused = true, elapsed = 0 }))
+  check("a narrow pane keeps the arrow", narrow:find("◀", 1, true) ~= nil)
+  check("but drops the chord", narrow:find("F9", 1, true) == nil)
+
+  diff.forget("s1")
+end
+
 print("== no session ==")
 do
   _G.thurbox = {
     sessions = {},
     diffs = {},
     theme = { name = "t", roles = roles },
-    registry = { settings = settings, keys = {} },
+    registry = {
+      settings = settings,
+      keys = { { action = "sessions.toggle_panel", key = "f9", plugin = "sessions" } },
+    },
   }
   store_backing.selected = nil
   has("it says so", joined(render()), "No session selected")

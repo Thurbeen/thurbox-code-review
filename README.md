@@ -8,7 +8,7 @@ was deleted with `src/ui`. This is the plugin that pays it back, and it is the
 first consumer of `thurbox.diffs` anywhere.
 
 ```text
-╭ Code review ──────────────────────────────── main..HEAD  +8 -4 ╮
+╭ ◀ F9 ─ Code review ───────────────────────── main..HEAD  +8 -4 ╮
 │docs/                 │  D docs/old.md  +0 -1                   │
 │   D old.md +0 -1     │@@ -1 +0,0 @@                            │
 │   R renamed.md +1 -0 │ 1   - to be deleted                     │
@@ -39,6 +39,14 @@ it shows the terminal again, rather than "wherever focus happened to be" — pre
 It is derived, not named: `thurbox.plugins` publishes every pane's slot, so the
 pane asks the interface what shares its own rather than assuming your
 arrangement. Replace the agent pane and this follows.
+
+The **session-column toggle stays on the border** — ` ◀ F9 `, the same
+affordance the agent pane draws, in the same place v1 draws it on every central
+view. A pane that took the centre and dropped it would make the arrow come and
+go depending on which view you were reading. The chevron points the way the list
+will move, the chord is looked up rather than written (rebind it and the border
+relabels), and both halves carry one click verb so the label is one button
+rather than a three-cell hitbox in the middle of six.
 
 It asks for **no capabilities**. There is no `run`, no `program`, no filesystem:
 everything it draws comes from `thurbox.diffs`, which the kernel computes on a
