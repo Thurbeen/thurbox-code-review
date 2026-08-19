@@ -754,6 +754,40 @@ do
   diff.forget("s1")
 end
 
+print("== every view toggle is advertised ==")
+do
+  -- The guard for what went wrong when `v` was added: `w` was replaced in the
+  -- footer rather than joined by it, so wrapping worked and nothing on screen
+  -- said so. Nothing failed — the key was declared, F1 listed it, `plugin check`
+  -- passed — which is exactly why this needs a test rather than care.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+  snapshot(ready(2, 4))
+  local drawn = joined(render())
+
+  local declared = {}
+  for _, entry in ipairs(plugin.keys) do
+    declared[entry.key] = entry.action
+  end
+
+  for _, pair in ipairs({
+    { "w", "review.wrap", "wrap" },
+    { "v", "review.side", "split" },
+    { "↵", "review.find_commit", "fold" },
+    { "m", "review.mark", "seen" },
+    { "r", "review.refresh", "refresh" },
+    { "e", "review.send", "send" },
+    { "/", "review.find", "find" },
+  }) do
+    local key, action, label = pair[1], pair[2], pair[3]
+    -- `↵` is `enter` in the keys table and a glyph in the footer.
+    local declared_as = key == "↵" and "enter" or key
+    eq("`" .. key .. "` is declared", declared[declared_as], action)
+    check("and offered in the footer as '" .. label .. "'", drawn:find(label, 1, true) ~= nil)
+  end
+  diff.forget("s1")
+end
+
 print("== no session ==")
 do
   _G.thurbox = {

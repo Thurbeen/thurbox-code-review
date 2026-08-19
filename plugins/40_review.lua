@@ -818,6 +818,13 @@ local function footer(width, ready)
     put("hunk", "[ ]")
     put("find", "/")
     put("fold", "↵")
+    -- Every key that changes what the BODY looks like belongs here. `w` was
+    -- dropped from this list when `v` was added — replaced rather than added to
+    -- — and the result is the failure this pane's own README warns about: the
+    -- key still worked, `plugin check` still passed, F1 still listed it, and
+    -- there was nothing on screen to say wrapping existed. A capability nobody
+    -- can find is not a capability.
+    put("wrap", "w")
     put("split", "v")
     put("seen", "m")
     put("refresh", "r")
