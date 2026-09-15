@@ -305,23 +305,33 @@ end
 
 local cache = {}
 
---- Sixteen samples plus the length: enough to notice a body that changed
---- without changing its line count, at O(1) per frame rather than O(lines).
+--- Whether two bodies are the same lines.
 ---
---- It is deliberately NOT the only guard. `epoch` below is the exact one; this
---- is what catches a change that somehow reached us without passing through a
---- non-ready state.
-local function fingerprint(body)
-  local count = #body
-  local parts = { count }
-  local stride = math.max(1, math.floor(count / 16))
-  for index = 1, count, stride do
-    local line = body[index]
-    parts[#parts + 1] = #line
-    parts[#parts + 1] = string.sub(line, 1, 24)
+--- Exact, and paid only when the TABLE changed. The kernel builds `thurbox.diffs`
+--- once per data epoch and hands the same table back on every frame between, so
+--- `rawequal` answers almost every call for free; a new table arrives when
+--- anything moved that epoch — often nothing about this diff — and one pass of
+--- string comparisons (interned, so mostly a pointer check) is ~4 instructions a
+--- line against the parse's ~100.
+---
+--- This replaced a sixteen-line sample. The sample was a backstop behind `epoch`,
+--- which was exact while the only way a diff could change was to be dropped and
+--- recomputed. The kernel's diff has an age now, and a stale answer is replaced
+--- in place with no pending frame between: a line edited anywhere the sample did
+--- not look stayed on screen as it was, under a header whose counts had moved.
+local function same_lines(a, b)
+  if rawequal(a, b) then
+    return true
   end
-  parts[#parts + 1] = body[count] or ""
-  return table.concat(parts, "\1")
+  if #a ~= #b then
+    return false
+  end
+  for index = #a, 1, -1 do
+    if a[index] ~= b[index] then
+      return false
+    end
+  end
+  return true
 end
 
 --- The parse of `session`'s current diff, advanced by one frame's budget.
@@ -330,15 +340,14 @@ end
 --- takes another `LINES_PER_FRAME` bite and comes back with `done = false`, and
 --- the pane draws the part that exists.
 ---
---- `epoch` is the exact invalidation. A diff's content can only change by the
---- store dropping its entry and recomputing, which means the pane must observe a
---- frame that is not `ready` in between (absent, then `pending`). Counting those
---- transitions identifies a body precisely, and costs one comparison — where
---- hashing the body itself would cost a pass over every line, every frame, for a
---- diff that almost never changes.
+--- `epoch` still forces a reparse — the pane moves it when a diff leaves `ready`,
+--- which a refresh does — and the lines themselves decide the rest.
 function M.parse(session, body, epoch)
   local held = cache[session]
-  if held and held.epoch == epoch and held.print == fingerprint(body) then
+  if held and held.epoch == epoch and same_lines(held.parse.body, body) then
+    -- Adopt the new table, so the next frame is a `rawequal` again rather than
+    -- another pass. The parse read the same strings from the old one.
+    held.parse.body = body
     if not held.parse.done then
       advance(held.parse, M.LINES_PER_FRAME)
     end
@@ -346,7 +355,7 @@ function M.parse(session, body, epoch)
   end
 
   local parse = advance(new_parse(body), M.LINES_PER_FRAME)
-  cache[session] = { epoch = epoch, print = fingerprint(body), parse = parse }
+  cache[session] = { epoch = epoch, parse = parse }
   return parse
 end
 

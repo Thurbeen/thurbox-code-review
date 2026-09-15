@@ -60,6 +60,41 @@ Free, at every shape tried:
 Which is the expected shape of the design: the window is bounded by the pane's
 height, so it costs the same whether the diff is forty rows or a hundred thousand.
 
+## The same diff, handed over again
+
+Since thurbox v2.5.2 the kernel's diff has an age (5 s), and a stale answer is
+replaced in place with no `pending` frame between. The pane used to tell bodies
+apart by an epoch that only moved on a non-ready frame, backed by a sixteen-line
+sample — which let a line edited anywhere the sample did not look stay on screen
+as it was. Bodies are now compared exactly, and only when the published TABLE is
+a different one.
+
+Measured on a synthetic 4 MiB diff cut on a line boundary (61,795 lines, 400
+files rewritten), against thurbox v2.24.1's interface:
+
+| | batches |
+|---|---|
+| a new table holding the same lines, the frame it arrives | **2** |
+| the frame after (the new table was adopted, so `rawequal`) | **0** |
+| a reparse, for comparison | 8 a frame, over 8 frames |
+
+The kernel rebuilds `thurbox.diffs` whenever its data epoch moves, which is
+more often than the diff changes, so this is the cost that keeps a republish
+from being a reparse.
+
+Re-measured at the same time, the render still costs 0 batches at 120x40 and 1
+at 120x200 wrapped, and the steady frame 0 — the numbers above hold on
+v2.24.1. The syntax lexer costs **2.40 batches a frame at 120x40** on this
+fixture against the 0.50 above: every file here is one 800-line hunk, so the
+lookback walks its full 400 lines on every frame. That is the `MAX_LOOKBACK`
+bound doing its job on a worst-shaped diff, and another reminder that a
+synthetic fixture answers a question about itself.
+
+`tests/measure.lua` swaps the harness's `text.width` for a native call before
+measuring. In the VM it is one Rust function, invisible to the count hook; the
+Lua stand-in the tests use walks the string, and measuring it read as 3 batches
+for a render that is 0.
+
 ## Two scans the measurement found, and killed
 
 Both were O(rows) *per frame* — invisible on a normal diff and paid on every one

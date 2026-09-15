@@ -8,6 +8,16 @@ local REPO = assert(os.getenv("REPO"), "REPO=")
 local UI = assert(os.getenv("UI"), "UI=")
 local DIFF = os.getenv("DIFF")
 
+dofile(REPO .. "/tests/text.lua")
+-- In the VM `text.width` is one native call, invisible to the count hook, where
+-- the stub walks the string in Lua. Measuring the stub would charge the pane for
+-- the harness — the first run after it arrived read 3 batches for a render that
+-- is 0 — so width here is a C call too. `utf8.len` answers nil for bytes that
+-- are not UTF-8, which a real diff can carry, so the byte count stands in there.
+text.width = function(s)
+  return utf8.len(s) or #s
+end
+
 local roles = setmetatable({}, {
   __index = function()
     return "#808080"
@@ -192,6 +202,30 @@ local steady = cost(function()
   end
 end)
 print(string.format("  steady frame (cache hit + window) -> %d batches", steady))
+
+-- ── the same diff, republished ─────────────────────────────────────────────
+--
+-- The kernel rebuilds `thurbox.diffs` whenever its data epoch moves, so the pane
+-- is handed a NEW table holding the same strings far more often than the diff
+-- changes. That frame pays one exact comparison of every line instead of a parse;
+-- after it the new table is adopted and the next frame is a `rawequal` again.
+local republished = {}
+for index, line in ipairs(body) do
+  republished[index] = line
+end
+local compared = cost(function()
+  diff.parse("m", republished, 0)
+end)
+local adopted = cost(function()
+  diff.parse("m", republished, 0)
+end)
+print(
+  string.format(
+    "  republished identical body -> %d batches on arrival, %d the frame after",
+    compared,
+    adopted
+  )
+)
 -- ── a run-sourced target: turning one capture into a diff ──────────────────
 --
 -- The picker's second source hands the pane a STRING, and the kernel hands it a

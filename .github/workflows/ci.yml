@@ -1,0 +1,89 @@
+# What CI can prove about the pane without a screen: the Lua is sound and stays
+# inside the sandbox, the pure modules and the pane's own node tree behave, and
+# the interface a real install produces loads.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The thurbox release this pane is tested against. One place, because the binary
+# and the `ui/` tree it loads have to be the same version: the tests load that
+# tag's real `lib.widgets`, and `thurbox.*` is a contract that moves.
+env:
+  THURBOX_TAG: v2.24.1
+
+jobs:
+  lint:
+    name: Lua
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Thurbeen/thurbox
+          ref: ${{ env.THURBOX_TAG }}
+          path: .thurbox
+          sparse-checkout: thurbox.yml
+          sparse-checkout-cone-mode: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: selene,stylua
+      # The vendored copy is what a local `selene .` reads. Failing when it has
+      # drifted from the tag says "refresh it" instead of linting against a
+      # sandbox that is no longer the real one.
+      - name: The sandbox contract matches the pinned tag
+        run: diff -u .thurbox/thurbox.yml thurbox.yml
+      - run: selene .
+      - run: stylua --check .
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Thurbeen/thurbox
+          ref: ${{ env.THURBOX_TAG }}
+          path: .thurbox
+          sparse-checkout: ui
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq lua5.4
+          command -v lua >/dev/null || sudo ln -s "$(command -v lua5.4)" /usr/local/bin/lua
+          lua -v
+      - name: The pure modules
+        run: THURBOX_REPO=.thurbox tests/run.sh
+      - name: The pane's own node tree
+        run: THURBOX_REPO=.thurbox tests/run.sh --render
+
+  loads:
+    name: Interface loads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Installed the way the README says, and the checkout's directory is
+          # named after the repository — which is the name the pane requires its
+          # modules by.
+          path: thurbox-code-review
+      - name: Fetch thurbox-cli from the release
+        run: |
+          curl -sSfL -o thurbox.tar.gz \
+            "https://github.com/Thurbeen/thurbox/releases/download/${THURBOX_TAG}/thurbox-${THURBOX_TAG}-x86_64-unknown-linux-musl.tar.gz"
+          tar xzf thurbox.tar.gz thurbox-cli
+      - name: Install and load it
+        # HOME and XDG pointed at the workspace so nothing real is read or
+        # written. `install` seeds the stock interface, clones the pane beside it
+        # and records it; `check` loads the result as the TUI would.
+        env:
+          HOME: ${{ github.workspace }}/home
+          XDG_CONFIG_HOME: ${{ github.workspace }}/home/.config
+          XDG_DATA_HOME: ${{ github.workspace }}/home/.local/share
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+          ./thurbox-cli plugin install "git+file://$GITHUB_WORKSPACE/thurbox-code-review"
+          ./thurbox-cli plugin check --text

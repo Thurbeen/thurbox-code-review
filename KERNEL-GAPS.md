@@ -7,11 +7,15 @@ patch someone could write rather than a wish. None of them is made here: a
 kernel change is not a plugin's to make unasked, and faking one in `state` would
 look like it worked.
 
-Written against the v2 plugin kernel at `962aef7`.
+Written against the v2 plugin kernel at `962aef7`, and **re-checked against
+thurbox v2.24.1** (2026-09-15) — each section says what that check found.
 
 ---
 
 ## 1. Review comments are stored and not published — the big one
+
+**Still open on v2.24.1.** Nothing under `thurbox.review`, no `review`
+command, and `state` still "survives a reload; not a restart" (PLUGINS.md).
 
 v1's storage survived the deletion of its UI, complete and unused:
 
@@ -78,6 +82,9 @@ anywhere else. So `c` and `s` are declared, listed in `F1`, and say this.
 
 ## 2. A plugin cannot put text on the clipboard
 
+**Still open on v2.24.1.** `Command::Copy` is still `{ session }` only
+(`src/kernel/command/mod.rs`).
+
 v1's `y` copied the review as markdown. `Command::Copy` takes `{ session }` and
 copies **that session's terminal**, so there is no spelling of "copy this text"
 for a plugin at all (`src/kernel/command.rs`, `Command::Copy { session }`).
@@ -98,13 +105,23 @@ from Lua is missing.
 
 ---
 
-## 3. Nothing says how old a diff is
+## 3. Nothing says how old a diff is — NARROWER
 
-Real, and realer since `command("diff", …)` exists: after a refresh there is no
-way to tell that anything happened, because the diff usually comes back identical
-and the only signal is a `pending` flicker lasting ~0.2 s. A `computed_at_ms` on
-the entry would let the title say "computed 4m ago". `taken_at_ms` is
-snapshot-wide and answers a different question.
+**Half closed since v2.5.2.** The kernel's diff has an age now: a `Ready` answer
+older than 5 s (`DIFF_TTL`) is recomputed while the old one stays published, and
+the fresh one replaces it with no `pending` frame between. So a diff no longer
+stands for the life of the process, and `r` is for "now" rather than for "ever".
+
+That change had a cost here, fixed in this pane: the parse cache told bodies
+apart by an epoch that only moved on a non-ready frame, backed by a sixteen-line
+sample, and a line edited where the sample did not look stayed on screen. Bodies
+are compared exactly now, only when the published table changed —
+`MEASUREMENTS.md` has the cost.
+
+**What is still missing** is the age itself. Nothing on the entry says when it
+was computed, so the title cannot say "computed 4 s ago" and a refresh that comes
+back identical is still invisible. A `computed_at_ms` on the entry would do it;
+`taken_at_ms` is snapshot-wide and answers a different question.
 
 A nicety, not a blocker.
 
@@ -174,21 +191,17 @@ it, and says so.
 not, so the last line of a truncated one is dropped rather than parsed as a real
 addition of a line that does not exist.
 
-**And one the kernel still has: `diff_working_on` omits untracked files.**
-`git::diff_working_on` is `["diff", "--no-color", "HEAD"]`, which cannot show a
-file git has never been told about. That is what a session with **no base
-branch** gets by default, and it is what v1 showed too — so an agent that has
-just written three new files reports as having changed nothing at all, which is
-the most common thing an agent does.
+**The kernel's working diff includes untracked files — CLOSED.** It did not when
+this was first written: `git::diff_working_on` was `git diff HEAD`, which cannot
+show a file git has never been told about, so a session with no base branch that
+had just written three new files reported no changes at all. The kernel now folds
+them in the way this pane does (`src/git/diff.rs`: `--no-index` per file, capped
+at `UNTRACKED_FILE_CAP` = 200, no scratch index, nothing written to the
+repository) and publishes `untracked_omitted` for the ones past the cap. The pane
+reads that count into the same banner as its own walk's.
 
-This pane fixes the half it runs itself (the `working` target walks
-`ls-files --others --exclude-standard` and diffs each against `/dev/null`), and
-cannot fix the kernel's. Worth doing there, and worth doing the same way rather
-than with a scratch `GIT_INDEX_FILE` plus `git add -A`: that gets everything in
-one process and **writes loose objects into the repository being reviewed**,
-which for a pane refreshing every few seconds against a worktree an agent is
-editing is a side effect nobody asked for. Measured: three new objects for three
-changed files.
+What is still open is the rest of this section: `command("diff", …)` takes no
+target, so the picker's other targets still come from `run`.
 
 **What is still worse than the kernel doing it.** A run answer is keyed
 `(plugin, key)` and evicted only when the plugin goes, so visiting N commits
@@ -204,6 +217,10 @@ git half and keep its picker.
 ---
 
 ## 6. A capability can only be granted by hand
+
+**Still open on v2.24.1.** `thurbox-cli plugin` has `dir`, `new`, `check`,
+`list`, `install`, `sync`, `update`, `remove`, `available` and `events`, and no
+`trust`; `plugin list` reads trust and does not write it.
 
 `run` is absent until the file is trusted, which is the model working. But trust
 is written by the Interface tab's `t` and by nothing else — there is no
@@ -225,6 +242,12 @@ listing half exists.
 ---
 
 ## 7. `Ctrl+H` / `Ctrl+L` stop on a pane that is not on screen
+
+**Still open on v2.24.1**, and the patch still needed. `cycle_focus` moved out of
+`src/main.rs` into `src/coordinator/focus.rs` and still asks `can_focus_plugin`,
+so `patches/kernel-focus-ring.patch` was rebuilt against that tag; its
+`kernel::focus` tests pass there. The code below is the shape of the change; the
+patch has the paths as they are now.
 
 The centre is a `switch` slot with two occupants — the agent and this pane — and
 one of them is drawn. The focus ring visits **both**:
@@ -251,7 +274,7 @@ That must not change.
 The trouble is that `cycle_focus` asks the *same* question:
 
 ```rust
-// src/main.rs, fn cycle_focus
+// src/coordinator/focus.rs, fn cycle_focus
 if focusable.get(next).is_some_and(|index| self.can_focus_plugin(*index))
 ```
 
@@ -304,8 +327,9 @@ would produce a pane that is unreachable down whichever path went untested.
 
 ## 8. Small: the two v1 chords are still asserted unbound
 
-`tests/v2_keymap.rs` lists `ctrl+x` and `f7` in `CHORDS_AWAITING_THEIR_PANE` and
-asserts they resolve to nothing, "until that pane is back". This pane claims both.
+`tests/keymap.rs` (renamed from `tests/v2_keymap.rs`) lists `ctrl+x` and `f7` in
+`CHORDS_AWAITING_THEIR_PANE` and asserts they resolve to nothing, "until that pane
+is back". This pane claims both. Unchanged on v2.24.1.
 
 That assertion is over the **bundled** interface, so an installed plugin does not
 break it and nothing needs to change to use this. But if this pane is ever

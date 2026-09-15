@@ -3,6 +3,8 @@
 A code-review pane for thurbox's v2 plugin interface: the diff of a session's
 worktree against its base branch, reviewable without leaving the TUI.
 
+![Opening the review with F7, moving through files and hunks, writing two notes and sending them to the agent](media/demo.gif)
+
 v1 shipped this natively — 1,844 lines of rendering and 2,610 of state — and it
 was deleted with `src/ui`. This is the plugin that pays it back, and it is the
 first consumer of `thurbox.diffs` anywhere.
@@ -48,15 +50,17 @@ will move, the chord is looked up rather than written (rebind it and the border
 relabels), and both halves carry one click verb so the label is one button
 rather than a three-cell hitbox in the middle of six.
 
-It asks for **no capabilities**. There is no `run`, no `program`, no filesystem:
-everything it draws comes from `thurbox.diffs`, which the kernel computes on a
-worker. Nothing to trust, nothing to grant.
+**The default review needs no capabilities.** The branch diff comes from
+`thurbox.diffs`, which the kernel computes on a worker, so an untrusted install
+draws it fully. The pane declares one capability, `run`, for the other targets
+of the picker — see [Choosing what to review](#choosing-what-to-review).
 
-It needs a v2 plugin kernel from 2026-08-18 or later: `store.selected`-driven
-diffs and `base_branch` on the session row (`5c7be55`), `status` / `old_path` /
-`raw_bytes` on a published diff (`cf06886`), `command("focus", { toggle })`
-(`feaca48`), and a file list built independently of the capped body (`962aef7`) —
-which the pane relies on, since it joins the list to the body **by path**.
+Tested against **thurbox v2.24.1** (and loads on v2.23.3); CI pins the tag. It
+needs a v2 plugin kernel with `store.selected`-driven diffs and `base_branch` on
+the session row, `status` / `old_path` / `raw_bytes` on a published diff,
+`command("focus", { toggle })`, and a file list built independently of the capped
+body — which the pane relies on, since it joins the list to the body **by path**.
+Checked on v2.23.3 and v2.24.1, which have all four.
 
 ## Keys
 
@@ -122,8 +126,8 @@ objects in the repo you are reviewing, every few seconds, while an agent edits i
 it.
 
 The kernel's own working diff — what a session with **no base branch** shows by
-default — still omits untracked files, because that is `git::diff_working_on` and
-this pane cannot reach it. `KERNEL-GAPS.md` §4 has it.
+default — includes untracked files the same way, with a cap of its own. Past
+either cap, the banner says how many untracked files are not listed.
 
 Two sources for one diff is a real cost and the pane does not pretend otherwise:
 
@@ -153,9 +157,11 @@ plugin declares `focusable`, `slot`, `slot_mode`, `order` and `floats`, and none
 of them says "not in the ring", so there is nothing to do here.
 
 `KERNEL-GAPS.md` §7 has the reasoning and `patches/kernel-focus-ring.patch` has
-the fix — three lines and three tests, compiled, and proved end to end: with it
-applied the ring is `Sessions → Agent → Sessions` and every `F7` round trip still
-works. `tests/render-proof.sh` prints the ring it observed and says `PENDING
+the fix — three lines and three tests. The first version was compiled and proved
+end to end: with it applied the ring is `Sessions → Agent → Sessions` and every
+`F7` round trip still works. It is rebuilt against v2.24.1, where `cycle_focus`
+moved, and there its `kernel::focus` tests pass; the whole binary has not been
+rebuilt with it. `tests/render-proof.sh` prints the ring it observed and says `PENDING
 KERNEL` until the fix lands.
 
 ## The one rule
@@ -245,7 +251,9 @@ Press `c` on a line and type. `⇥` cycles the classification (issue / suggestio
 note / praise), `↵` saves, `esc` discards. `s` writes a note about the review
 rather than a line. Notes appear as rows in the diff under what they are about —
 one row each, selectable like any other — so `↵` on one edits it and `x` deletes
-it. `e` sends them all to the session's agent, in the markdown v1 sent:
+it. `e` sends them all to the session's agent — and once there is a note, the
+footer offers `e send` beside `c note` rather than last, where a narrow pane
+trimmed it — in the markdown v1 sent:
 
 ```markdown
 # Code review
@@ -311,7 +319,9 @@ can still be ticked off.
 ## Developing
 
 ```bash
-export THURBOX_REPO=/path/to/a/thurbox/checkout   # both test scripts need one
+# Both test scripts need thurbox's `ui/` at the tag CI pins. A checkout works,
+# or just the tree: git -C <thurbox> archive v2.24.1 ui thurbox.yml | tar -x -C <dir>
+export THURBOX_REPO=/path/to/thurbox
 
 selene .                      # the sandbox contract, statically
 stylua --check .
@@ -321,6 +331,17 @@ tests/run.sh --render         # the pane's own node tree
 tests/run.sh --measure        # the cost, in the kernel's own unit
 tests/render-proof.sh         # the pane actually painting, in a real thurbox
 ```
+
+`.publish.yaml` declares the same checks as the gate, and CI
+(`.github/workflows/ci.yml`) runs them against the pinned thurbox tag, plus
+`plugin check` on a real install made with that release's `thurbox-cli`. The
+vendored `thurbox.yml` must match the tag's; CI says so when it drifts.
+
+The GIF above is `demo/record.sh`: a throwaway thurbox (`demo/sandbox.sh` — its
+own `HOME`, XDG roots and tmux socket, and a made-up project) recorded with
+asciinema, driven by tmux because F7 is an F-key, and rendered with agg. It
+refuses to render a cast that contains the recording machine's username,
+hostname or paths.
 
 `THURBOX_BIN` points `render-proof.sh` at a *snapshot* of the binaries instead of
 the checkout's `target/debug`. Worth using: a checkout is a live working tree, and

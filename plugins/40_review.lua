@@ -1205,13 +1205,23 @@ end
 --- the picker added. The cap is carried on the entry and printed from there, and
 --- the total is printed only when there IS one — a cut capture cannot say how
 --- big the whole was, and inventing a number is worse than omitting one.
+local function untracked_short(entry)
+  -- Two spellings of one fact: `untracked_cut` from this pane's own walk, and
+  -- `untracked_omitted` from the kernel's, which folds untracked files into a
+  -- working diff too now. The kernel publishes its count always, zero included,
+  -- and zero is true in Lua — so it is compared, never tested.
+  local omitted = entry.untracked_omitted
+  return entry.untracked_cut or (type(omitted) == "number" and omitted > 0 and omitted) or nil
+end
+
 local function truncation_notice(entry, parse)
   -- A short LIST is not a capped patch, and it is said first because it is the
   -- one that means "a file you changed is not named anywhere on this screen".
-  if entry.untracked_cut then
+  local short = untracked_short(entry)
+  if short then
     return string.format(
       "%d more untracked files than this can show — commit or ignore some",
-      entry.untracked_cut
+      short
     )
   end
   local shown = entry.cap or (4 * 1024 * 1024)
@@ -1281,7 +1291,13 @@ end
 --- runs instead dropped the label and kept the key, so a 60-column pane advertised
 --- a bare `e` — a chord with nothing to say what it does, which is worse than no
 --- chord at all.
-local function footer(width, ready)
+---
+--- `sendable` is whether any note has been written. Until one has, `send` has
+--- nothing to send and is the first hint to go; once one has, it is the thing to
+--- do next and sits beside `note`, because the pane beside the session list is
+--- ~90 columns and a strip trimmed from the right lost it on exactly the screen
+--- where a note had just been written.
+local function footer(width, ready, sendable)
   local hints = {}
   local function put(label, keys)
     hints[#hints + 1] = hint(label, keys)
@@ -1295,6 +1311,9 @@ local function footer(width, ready)
     put("hunk", "[ ]")
     put("find", "/")
     put("note", "c")
+    if sendable then
+      put("send", "e")
+    end
     put("fold", "↵")
     -- Every key that changes what the BODY looks like belongs here. `w` was
     -- dropped from this list when `v` was added — replaced rather than added to
@@ -1307,7 +1326,9 @@ local function footer(width, ready)
     put("seen", "m")
     put("target", "t")
     put("refresh", "r")
-    put("send", "e")
+    if not sendable then
+      put("send", "e")
+    end
   end
   local function measure()
     local used = 0
@@ -1555,7 +1576,7 @@ return {
         left = left,
         right = opts.right,
         right_column = opts.right_column,
-        footer = footer(width, opts.ready == true),
+        footer = footer(width, opts.ready == true, opts.sendable == true),
         body = opts.body,
       })
     end
@@ -1702,7 +1723,7 @@ return {
     local inner_w, inner_h = math.max(1, width - 2), math.max(1, height - 2)
     local hits = matches(id, parse, in_force, query(id))
     local bar = find_open(id) and 1 or 0
-    local notice = (entry.truncated or entry.untracked_cut) and 1 or 0
+    local notice = (entry.truncated or untracked_short(entry)) and 1 or 0
     -- The compose block is a strip plus a framed field: one row saying what is
     -- being noted and how long it lasts, three for the field itself.
     local held = compose_of(id)
@@ -1859,6 +1880,7 @@ return {
 
     return frame({
       ready = true,
+      sendable = #notes.all(state, id) > 0,
       right = right,
       -- `inner_h`, not the pane height: the column is painted into the inner
       -- rows, so a bar built for two rows more put its ▼ past the last one and

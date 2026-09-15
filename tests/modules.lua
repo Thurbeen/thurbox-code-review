@@ -9,6 +9,8 @@
 local REPO = assert(os.getenv("REPO"), "REPO=")
 local UI = assert(os.getenv("UI"), "UI=")
 
+dofile(REPO .. "/tests/text.lua")
+
 -- The snapshot the bundled lib reads.
 local roles = {}
 for _, name in ipairs({
@@ -748,6 +750,46 @@ do
   -- Same length, different content, same epoch: the fingerprint is the backstop.
   local third = diff.parse("e", a, 1)
   eq("the fingerprint catches a same-length change", third.files[1].path, "a")
+end
+
+print("== a diff refreshed in place is re-read ==")
+do
+  -- The kernel's diff has an age now (5 s) and a stale answer is replaced by the
+  -- fresh one with NO pending frame between them — the old one stays published
+  -- while the new one is computed. So the epoch never moves, and a body that
+  -- changed on a line the fingerprint does not sample was served from the old
+  -- parse for as long as the pane was open: the header's counts, which come from
+  -- the kernel's list, moved, and the line under them did not.
+  local function body(last)
+    local out = { "diff --git a/f b/f", "--- a/f", "+++ b/f", "@@ -0,0 +1,96 @@" }
+    for n = 1, 96 do
+      out[#out + 1] = "+" .. string.rep("x", 30) .. string.format("%03d", n)
+    end
+    -- Line 50 of the body is added line 46: not one of the sixteen samples, and
+    -- the change is past the 24 bytes a sample keeps. Same length.
+    out[50] = "+" .. string.rep("x", 30) .. last
+    return out
+  end
+  local function row_46(parse)
+    for _, row in ipairs(parse.rows) do
+      if row.new_no == 46 then
+        return row.text
+      end
+    end
+  end
+
+  diff.forget("refresh")
+  local first = diff.parse("refresh", body("old"), 0)
+  eq("the first answer", row_46(first), string.rep("x", 30) .. "old")
+
+  local changed = diff.parse("refresh", body("new"), 0)
+  eq("a changed line is re-read on the same epoch", row_46(changed), string.rep("x", 30) .. "new")
+
+  -- And the cheap half, which is the reason the cache exists: the kernel hands
+  -- over a NEW table every time its data epoch moves, identical or not, and an
+  -- identical one must not cost a parse.
+  local again = diff.parse("refresh", body("new"), 0)
+  check("an identical republish keeps the parse", rawequal(again, changed))
 end
 
 -- ── the review target ───────────────────────────────────────────────────────
