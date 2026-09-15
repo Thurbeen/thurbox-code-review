@@ -13,6 +13,8 @@ local UI = assert(os.getenv("UI"), "UI=")
 
 -- ── the environment the plugin VM provides ──────────────────────────────────
 
+dofile(REPO .. "/tests/text.lua")
+
 local roles = {}
 for _, name in ipairs({
   "accent",
@@ -598,6 +600,17 @@ do
 
   snapshot(ready(2, 5, { truncated = true }))
   has("and degrades without raw_bytes", joined(render()), "some changes are not shown")
+
+  -- The kernel folds untracked files into a working diff now, up to a cap of its
+  -- own, and publishes how many it left out. It publishes the count ALWAYS,
+  -- zero included — and zero is true in Lua, so reading it as a flag would put a
+  -- banner over every diff there is.
+  snapshot(ready(2, 5, { untracked_omitted = 3 }))
+  has("the kernel's short list is named", joined(render()), "3 more untracked files")
+
+  snapshot(ready(2, 5, { untracked_omitted = 0 }))
+  hasnt("and zero omitted says nothing", joined(render()), "untracked files")
+  hasnt("nor claims a cut", joined(render()), "not shown")
 end
 
 print("== the list and the body are two lists now ==")

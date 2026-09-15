@@ -1205,13 +1205,23 @@ end
 --- the picker added. The cap is carried on the entry and printed from there, and
 --- the total is printed only when there IS one — a cut capture cannot say how
 --- big the whole was, and inventing a number is worse than omitting one.
+local function untracked_short(entry)
+  -- Two spellings of one fact: `untracked_cut` from this pane's own walk, and
+  -- `untracked_omitted` from the kernel's, which folds untracked files into a
+  -- working diff too now. The kernel publishes its count always, zero included,
+  -- and zero is true in Lua — so it is compared, never tested.
+  local omitted = entry.untracked_omitted
+  return entry.untracked_cut or (type(omitted) == "number" and omitted > 0 and omitted) or nil
+end
+
 local function truncation_notice(entry, parse)
   -- A short LIST is not a capped patch, and it is said first because it is the
   -- one that means "a file you changed is not named anywhere on this screen".
-  if entry.untracked_cut then
+  local short = untracked_short(entry)
+  if short then
     return string.format(
       "%d more untracked files than this can show — commit or ignore some",
-      entry.untracked_cut
+      short
     )
   end
   local shown = entry.cap or (4 * 1024 * 1024)
@@ -1702,7 +1712,7 @@ return {
     local inner_w, inner_h = math.max(1, width - 2), math.max(1, height - 2)
     local hits = matches(id, parse, in_force, query(id))
     local bar = find_open(id) and 1 or 0
-    local notice = (entry.truncated or entry.untracked_cut) and 1 or 0
+    local notice = (entry.truncated or untracked_short(entry)) and 1 or 0
     -- The compose block is a strip plus a framed field: one row saying what is
     -- being noted and how long it lasts, three for the field itself.
     local held = compose_of(id)
