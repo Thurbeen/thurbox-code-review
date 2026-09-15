@@ -47,7 +47,7 @@ default = "agent"
 [[agents]]
 name = "agent"
 command = "sh"
-args = ["-c", "stty -echoctl; printf 'agent ready\\n\\n'; exec cat >/dev/null"]
+args = ["-c", "stty -echoctl; exec cat >/dev/null"]
 AGENTS
 
 git_demo() { git -c user.email=demo@example.com -c user.name=demo "$@"; }
