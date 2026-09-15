@@ -62,7 +62,7 @@ height, so it costs the same whether the diff is forty rows or a hundred thousan
 
 ## The same diff, handed over again
 
-Since thurbox v2.23 the kernel's diff has an age (5 s), and a stale answer is
+Since thurbox v2.5.2 the kernel's diff has an age (5 s), and a stale answer is
 replaced in place with no `pending` frame between. The pane used to tell bodies
 apart by an epoch that only moved on a non-ready frame, backed by a sixteen-line
 sample — which let a line edited anywhere the sample did not look stay on screen
