@@ -60,7 +60,7 @@ needs a v2 plugin kernel with `store.selected`-driven diffs and `base_branch` on
 the session row, `status` / `old_path` / `raw_bytes` on a published diff,
 `command("focus", { toggle })`, and a file list built independently of the capped
 body — which the pane relies on, since it joins the list to the body **by path**.
-Every v2 release has all four.
+Checked on v2.23.3 and v2.24.1, which have all four.
 
 ## Keys
 
@@ -157,9 +157,11 @@ plugin declares `focusable`, `slot`, `slot_mode`, `order` and `floats`, and none
 of them says "not in the ring", so there is nothing to do here.
 
 `KERNEL-GAPS.md` §7 has the reasoning and `patches/kernel-focus-ring.patch` has
-the fix — three lines and three tests, compiled, and proved end to end: with it
-applied the ring is `Sessions → Agent → Sessions` and every `F7` round trip still
-works. `tests/render-proof.sh` prints the ring it observed and says `PENDING
+the fix — three lines and three tests. The first version was compiled and proved
+end to end: with it applied the ring is `Sessions → Agent → Sessions` and every
+`F7` round trip still works. It is rebuilt against v2.24.1, where `cycle_focus`
+moved, and there its `kernel::focus` tests pass; the whole binary has not been
+rebuilt with it. `tests/render-proof.sh` prints the ring it observed and says `PENDING
 KERNEL` until the fix lands.
 
 ## The one rule

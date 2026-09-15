@@ -12,8 +12,11 @@ dofile(REPO .. "/tests/text.lua")
 -- In the VM `text.width` is one native call, invisible to the count hook, where
 -- the stub walks the string in Lua. Measuring the stub would charge the pane for
 -- the harness — the first run after it arrived read 3 batches for a render that
--- is 0 — so width here is a C call too.
-text.width = utf8.len
+-- is 0 — so width here is a C call too. `utf8.len` answers nil for bytes that
+-- are not UTF-8, which a real diff can carry, so the byte count stands in there.
+text.width = function(s)
+  return utf8.len(s) or #s
+end
 
 local roles = setmetatable({}, {
   __index = function()

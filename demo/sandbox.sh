@@ -28,6 +28,9 @@ command -v sqlite3 >/dev/null || { echo "sqlite3 is needed to skip the first-lau
 ROOT=${DEMO_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/thurbox-code-review-demo}
 mkdir -p "$ROOT"
 S=$(mktemp -d "$ROOT/sandbox.XXXXXX")
+# Until the root is printed the caller cannot tear it down, and `session create`
+# has already started a tmux server by the time most of what follows can fail.
+trap 'TMUX_TMPDIR="$S/tmux" tmux -L thurbox kill-server 2>/dev/null; rm -rf "$S"' ERR
 export HOME="$S"
 export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$S/.local/share"
 export XDG_STATE_HOME="$S/.local/state" XDG_CACHE_HOME="$S/.cache"
