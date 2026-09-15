@@ -95,6 +95,27 @@ measuring. In the VM it is one Rust function, invisible to the count hook; the
 Lua stand-in the tests use walks the string, and measuring it read as 3 batches
 for a render that is 0.
 
+## What the Agent tab pays for sharing a pane with the review
+
+The shipped agent pane declares `pure = true`: the kernel keeps its tree and skips
+the Lua call on every frame where nothing it read changed. This repository's
+agent pane cannot. The parse above advances only when `render` is called, and a
+pure pane is not called again until something it read moves — so a large diff
+would stop at its first 8,000 lines. The pane is `pure = false`, and the Agent
+and Shell tabs are rendered every frame.
+
+One render of the Agent tab, 120x40, counted with a hook on every instruction:
+
+| | instructions | batches |
+|---|---|---|
+| thurbox's agent pane (v2.24.1; the same file through v2.25.0) | 8,398 | 0.08 |
+| this agent pane (the third chip is the difference) | 10,797 | 0.11 |
+
+About a tenth of one batch a frame, against the 200 the kernel allows a call —
+where the shipped pane's cached steady frame costs nothing. That is the price of
+Review being a tab rather than a second pane, and it is the price a kernel-side
+tab would remove (the pane would be pure again, and the review its own plugin).
+
 ## Two scans the measurement found, and killed
 
 Both were O(rows) *per frame* — invisible on a normal diff and paid on every one

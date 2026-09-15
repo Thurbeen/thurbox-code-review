@@ -1,6 +1,6 @@
 -- thurbox-code-review's agent pane: thurbox's own, with a Review tab.
 --
--- review tab: vendored from thurbox v2.24.1 `ui/plugins/20_agent.lua`
+-- review tab: vendored from thurbox v2.25.0 `ui/plugins/20_agent.lua`
 -- (unchanged upstream since v2.19.0) in the commit before the fork, so an
 -- upstream change to the pane is a git merge. Every line this fork adds or
 -- alters says `review tab:`, and the review itself is `lib/review.lua`.

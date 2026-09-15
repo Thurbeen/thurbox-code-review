@@ -1,74 +1,181 @@
 # thurbox-code-review
 
-A code-review pane for thurbox's v2 plugin interface: the diff of a session's
-worktree against its base branch, reviewable without leaving the TUI.
+Code review for thurbox's v2 plugin interface, as a third tab of the agent pane:
+**Agent / Shell / Review**. Review shows the diff of a session's worktree against
+its base branch, and it behaves exactly as Shell does: the same chip on the same
+strip, a chord that toggles it, a tab remembered per session, and no stop of its
+own on `Ctrl+H` / `Ctrl+L`.
 
-![Opening the review with F7, moving through files and hunks, writing two notes and sending them to the agent](media/demo.gif)
+![The Review tab beside Agent and Shell: F8 and F7 switch tabs, Ctrl+H and Ctrl+L walk past it, two notes are written and sent to the agent](media/demo.gif)
+
+```text
+╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ──────────────────── main..HEAD  +8 -4 ╮
+│docs/                 │ ▾D docs/old.md  +0 -1                                   │
+│   D old.md +0 -1     │@@ -1 +0,0 @@                                            │
+│   R renamed.md +1 -0 │ 1   - to be deleted                                     │
+│src/                  │ ▾R docs/notes.md → docs/renamed.md  +1 -0               │
+│   A added.txt +1 -0  │@@ -1,2 +1,3 @@                                          │
+│ ✓ M one.lua +4 -2    │ 1  1  # Notes                                           │
+│src/deep/nested/      │ 2  2  first                                             │
+│   M two.rs +2 -1     │    3+ second                                            │
+╰ j/k move ⇥ file [ ] hunk / find c note ↵ fold w wrap v split m seen t target ──╯
+```
 
 v1 shipped this natively — 1,844 lines of rendering and 2,610 of state — and it
 was deleted with `src/ui`. This is the plugin that pays it back, and it is the
 first consumer of `thurbox.diffs` anywhere.
 
+## What it installs
+
+A plugin cannot add a tab to a pane it does not own, so this repository ships
+**its own agent pane**: thurbox's `ui/plugins/20_agent.lua`, vendored unchanged
+from **thurbox v2.25.0**, plus the Review tab. The review itself lives in
+`lib/`. Agent and Shell draw and take keys exactly as in thurbox's pane — the
+tests render both side by side to prove it.
+
+That has three consequences, and the install steps below deal with each:
+
+- **It replaces the bundled agent pane.** Both are named `agent` and both occupy
+  the `center` slot, and `plugin install` does not remove the bundled one.
+- **It cannot be combined with another agent pane fork**, such as the one
+  thurbox-files ships. Two forks is the same problem as two agent panes.
+- **The `run` grant is made to the agent pane's file**, since the review is part
+  of that pane now.
+
+What changes on the border:
+
 ```text
-╭ ◀ F9 ─ Code review ───────────────────────── main..HEAD  +8 -4 ╮
-│docs/                 │  D docs/old.md  +0 -1                   │
-│   D old.md +0 -1     │@@ -1 +0,0 @@                            │
-│   R renamed.md +1 -0 │ 1   - to be deleted                     │
-│src/                  │  R docs/notes.md → docs/renamed.md +1 -0│
-│   A added.txt +1 -0  │@@ -1,2 +1,3 @@                          │
-│ ✓ M one.lua +4 -2    │ 1  1  # Notes                           │
-│src/deep/nested/      │ 2  2  first                             │
-│   M two.rs +2 -1     │    3+ second                            │
-╰ j/k move ⇥ file [ ] hunk / find m seen t target r refresh e send╯
+before ╭ ◀ F9 ─ Agent ─ Shell · F8 ──────────────── weather (claude) [feat/x] [Idle] ╮
+after  ╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ── weather (claude) [feat/x] [Idle] ╮
 ```
 
 ## Install
 
-```bash
-thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
-```
+1. **Check the thurbox version.** It needs **v2.24.0 or later**; CI tests
+   v2.25.0.
 
-**No `layout.lua` edit.** The pane occupies the `center` switch slot beside the
-agent's terminal and declares a pill, so the action band offers it the moment it
-is installed. Press `Ctrl+X` or `F7` — v1's chords, unbound in v2 until now.
+   ```bash
+   thurbox-cli version
+   ```
 
-The same key takes you back out, and so does `Esc` — onto **whatever else lives
-in this pane's slot**, which in the stock arrangement is the agent's terminal.
-That is v1's behaviour, where the review is a tab of the centre pane and leaving
-it shows the terminal again, rather than "wherever focus happened to be" — press
-`F7` from the session list and you still come back to the agent.
+   ```text
+   thurbox 2.25.0
+   ```
 
-It is derived, not named: `thurbox.plugins` publishes every pane's slot, so the
-pane asks the interface what shares its own rather than assuming your
-arrangement. Replace the agent pane and this follows.
+2. **Install the plugin.** This clones the repository into your interface
+   directory, as `thurbox-code-review/`, and records it in `plugins.toml`.
+   Nothing is run.
 
-The **session-column toggle stays on the border** — ` ◀ F9 `, the same
-affordance the agent pane draws, in the same place v1 draws it on every central
-view. A pane that took the centre and dropped it would make the arrow come and
-go depending on which view you were reading. The chevron points the way the list
-will move, the chord is looked up rather than written (rebind it and the border
-relabels), and both halves carry one click verb so the label is one button
-rather than a three-cell hitbox in the middle of six.
+   ```bash
+   thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+   ```
 
-**The default review needs no capabilities.** The branch diff comes from
-`thurbox.diffs`, which the kernel computes on a worker, so an untrusted install
-draws it fully. The pane declares one capability, `run`, for the other targets
-of the picker — see [Choosing what to review](#choosing-what-to-review).
+   ```text
+   installed thurbox-code-review/plugins/20_agent.lua from git+https://github.com/Thurbeen/thurbox-code-review (…)
+     a working copy of that repository is now in your interface directory
+     `thurbox-cli plugin check` to confirm it loads and draws
+   ```
 
-Tested against **thurbox v2.24.1** (and loads on v2.23.3); CI pins the tag. It
-needs a v2 plugin kernel with `store.selected`-driven diffs and `base_branch` on
-the session row, `status` / `old_path` / `raw_bytes` on a published diff,
-`command("focus", { toggle })`, and a file list built independently of the capped
-body — which the pane relies on, since it joins the list to the body **by path**.
-Checked on v2.23.3 and v2.24.1, which have all four.
+3. **Remove the bundled agent pane.** This plugin's agent pane replaces it.
+
+   ```bash
+   rm "$(thurbox-cli plugin dir --text | head -1)/plugins/20_agent.lua"
+   ```
+
+   Deleting a file thurbox ships is how you remove it: it is recorded as removed
+   and no upgrade writes it back. Or turn it off instead: in thurbox, `Ctrl+,`
+   (or `F6`) → `]` for the Interface tab → `j`/`k` to `plugins/20_agent.lua` →
+   `space`. Either way the stock pane is one key away — see step 8.
+
+4. **Check that exactly one agent pane loads.**
+
+   ```bash
+   thurbox-cli plugin check
+   ```
+
+   ```text
+   ~/.config/thurbox/ui
+     ✓ loads — sessions, agent, confirm, rename, search, new_session, restore
+   ```
+
+   `agent, agent` and a warning about `plugins/20_agent.lua` mean step 3 was
+   skipped — see [Troubleshooting](#troubleshooting).
+
+5. **Turn it on, if settings show it off.** In thurbox, `Ctrl+,` (or `F6`) →
+   `]` → `j`/`k` to `thurbox-code-review/plugins/20_agent.lua` → `space`. A
+   file you turned off stays off by its path, so if you ever turned this one off,
+   a reinstall brings it back **off** — `plugin check` then lists no `agent` at
+   all.
+
+6. **Optionally, grant `run`.** Same row, while it is on → `t`. The review works
+   without it: the kernel computes the branch diff (or the working changes, for
+   a session with no base branch). `run` unlocks the other targets of the `t`
+   picker — the uncommitted changes of a session that has a base branch, and
+   single commits — by running `git` on a worker. Nothing is run until you open
+   the picker. The grant is recorded against the installed version: after a
+   `plugin update` that moves it, `t` asks again.
+
+7. **Open the Review tab.**
+
+   - `F7`, from any pane — press it again to go back to the agent;
+   - a click on the `Review · F7` chip;
+   - `Ctrl+P` → `review` → *review this session's changes*;
+   - `Ctrl+X`, but only from a pane with no terminal, such as the session list:
+     a focused terminal keeps `Ctrl+X` for the program in it.
+
+   `Esc` on the Review tab shows the agent again, and so does `e` after sending
+   the notes.
+
+8. **Update, remove, and get the stock agent pane back.**
+
+   ```bash
+   thurbox-cli plugin update                                          # every entry
+   thurbox-cli plugin remove thurbox-code-review/plugins/20_agent.lua  # by the file it delivered
+   ```
+
+   The entry has no name of its own, so `plugin remove` takes the file.
+   Removing it leaves **no** agent pane until you restore thurbox's: `Ctrl+,`
+   (or `F6`) → `]` → `plugins/20_agent.lua` → `r` (or `space`, if you turned it
+   off in step 3). `plugin check` then lists `agent` again.
+
+## Troubleshooting
+
+**There is no Review tab.** Run `thurbox-cli plugin check`.
+
+- `agent, agent` — the bundled pane still loads. Do step 3.
+- no `agent` at all — this pane is off. Do step 5. A load error shows on its row
+  in the Interface tab, and in `thurbox-cli plugin list`.
+- an older thurbox — `thurbox-cli version` below 2.24.0. Upgrade thurbox.
+
+**Two agent panes are enabled.** This happens with the bundled pane, or with
+another fork such as thurbox-files' `20_agent.lua`. Both load; the first in load
+order is drawn, and `plugin check` warns that the other `shares the "center"
+slot and is not the one shown by default`. In a test with each pair, this pane
+was the one drawn, and it misbehaves in the same way: `Ctrl+L` stops on the
+hidden one and brings it forward, so the strip loses its Review chip and the
+ring has three stops for two visible panes. Keep one — turn the other off with
+`space` in the Interface tab. Two forks of the agent pane cannot be combined;
+their changes would have to be merged into one file.
+
+**`F7` does something else, or nothing.** Another plugin declares `f7` too. `F1`
+opens Keybindings, which lists what every key is bound to: move to *review this
+session's changes* (or to the other binding) and press `r` to rebind it. The
+Review chip and `Ctrl+P` reach the tab whatever `F7` does.
+
+**Letters, `Tab` and `Esc` go to the agent.** On the Agent and Shell tabs they
+should. The review's keys are declared on the agent pane, and each one is handed
+on to the terminal unless the Review tab is showing.
 
 ## Keys
 
+On the Review tab:
+
 | | |
 |---|---|
-| `Ctrl+X` / `F7` | open the review — and, pressed again, leave it (global; `Ctrl+X` passes through to a focused agent, which is why the F-key exists) |
+| `F7` / `Ctrl+X` | show the Review tab, or the Agent tab if Review is showing (global; `Ctrl+X` only from a pane with no terminal) |
 | `j` `k` `↑` `↓` | move by one logical row |
 | `PgUp` `PgDn` `g` `G` | page, top, bottom |
+| wheel | move by one logical row |
 | `⇥` `⇧⇥` | next / previous file, walking the **list** — which reaches files whose patch the cap cut |
 | `[` `]` | previous / next hunk |
 | `h` `l` `←` `→` | scroll the body horizontally (the gutter stays pinned) |
@@ -84,16 +191,22 @@ Checked on v2.23.3 and v2.24.1, which have all four.
 | `c` | note on the line or file under the cursor |
 | `s` | note on the review as a whole |
 | `x` `Del` | delete the note under the cursor |
-| `e` | send the notes to the session's agent |
-| `Esc` | close the find bar, or go back where you came from |
+| `e` | send the notes to the session's agent, and show the Agent tab |
+| `Esc` | close the find bar, the picker or the note — or show the Agent tab |
+
+On the Agent and Shell tabs every one of these letters reaches the terminal, as
+it always did. `F1` lists them under the agent pane, because that is the pane
+that declares them.
 
 `r` is refresh rather than v1's mark-reviewed, because `r` is refresh in every
 other pane and a chord that means two different things depending on where you
 are standing is worse than one spelled differently here. Marking is `m`.
 
 `v`, `w`, `f` and the syntax switch are the **same** four settings you see in
-`Ctrl+,` → Plugins — the key writes the setting rather than shadowing it, so the
-modal always shows what the keys did and resetting it there works.
+`Ctrl+,` → Plugins, under the agent pane as `review_side`, `review_wrap`,
+`review_files` and `review_syntax` — the key writes the setting rather than
+shadowing it, so the modal always shows what the keys did and resetting it there
+works.
 
 ## Choosing what to review
 
@@ -103,17 +216,17 @@ so `t ↵` changes nothing.
 
 The kernel computes exactly one of those — the branch when a session has a base,
 the working changes when it does not. The rest are asked for by running `git`,
-which is why this pane declares one capability:
+which is why the agent pane declares one capability on the review's behalf:
 
 ```lua
 capabilities = { "run" },
 ```
 
 **Untrusted, everything else still works.** `run` is simply absent until you
-grant it (`Ctrl+,` → `]` → select → `t`), and without it the pane draws the
-kernel's diff exactly as it did before there was a picker — `t` still opens, and
-names the choices it cannot serve rather than hiding them. **Nothing is run until
-you open the picker**, and nothing at all for the target the kernel already has.
+grant it (install step 6), and without it the review draws the kernel's diff —
+`t` still opens, and names the choices it cannot serve rather than hiding them.
+**Nothing is run until you open the picker**, and nothing at all for the target
+the kernel already has.
 
 **Uncommitted means uncommitted, including files git has never seen.** `git diff
 HEAD` does not show an untracked file, and writing new files is most of what an
@@ -129,7 +242,8 @@ The kernel's own working diff — what a session with **no base branch** shows b
 default — includes untracked files the same way, with a cap of its own. Past
 either cap, the banner says how many untracked files are not listed.
 
-Two sources for one diff is a real cost and the pane does not pretend otherwise:
+Two sources for one diff is a real cost and the review does not pretend
+otherwise:
 
 - **The cap differs.** The kernel cuts a body at 4 MiB; a run's output is cut at
   256 KiB. The banner names whichever one applied, so "the first 256 KB git
@@ -144,25 +258,38 @@ Two sources for one diff is a real cost and the pane does not pretend otherwise:
 `KERNEL-GAPS.md` §4 has the shape a kernel-side `DiffStore` keyed on
 `(session, target)` would take, and what it would fix that this cannot.
 
-## One thing that is not right yet, and is not this pane's to fix
+## The fork, and keeping it current
 
-`Ctrl+H` / `Ctrl+L` stop on this pane **even when the agent's terminal is the one
-on screen** — three stops for two visible panes, and walking past displaces your
-terminal. It should behave exactly as the terminal does: the ring visits whichever
-occupant of the centre is showing, and changes nothing by passing through.
+`plugins/20_agent.lua` is thurbox's agent pane with a Review tab added, and its
+history is built so an upstream change to the pane is a merge:
 
-That is `cycle_focus` asking `focus::can_focus`, which admits a switch alternate
-on purpose (focusing one is what brings it forward — that is how `F7` works). A
-plugin declares `focusable`, `slot`, `slot_mode`, `order` and `floats`, and none
-of them says "not in the ring", so there is nothing to do here.
+- one commit, `chore(agent): vendor thurbox v2.25.0's ui/plugins/20_agent.lua
+  unchanged`, is the file exactly as shipped (it has not changed upstream since
+  v2.19.0);
+- the next commit is the whole fork. Every line it adds or alters carries
+  `review tab:`, and the table the pane returns is upstream's line for line — the
+  review's keys, settings and capability are appended after it.
 
-`KERNEL-GAPS.md` §7 has the reasoning and `patches/kernel-focus-ring.patch` has
-the fix — three lines and three tests. The first version was compiled and proved
-end to end: with it applied the ring is `Sessions → Agent → Sessions` and every
-`F7` round trip still works. It is rebuilt against v2.24.1, where `cycle_focus`
-moved, and there its `kernel::focus` tests pass; the whole binary has not been
-rebuilt with it. `tests/render-proof.sh` prints the ring it observed and says `PENDING
-KERNEL` until the fix lands.
+When a thurbox release changes `ui/plugins/20_agent.lua`:
+
+```bash
+# On a branch from the last vendor commit, take the new file as it is…
+git switch -c vendor-vX.Y.Z "$(git log --format=%H -1 --grep='^chore(agent): vendor')"
+git -C /path/to/thurbox show vX.Y.Z:ui/plugins/20_agent.lua > plugins/20_agent.lua
+git commit -am "chore(agent): vendor thurbox vX.Y.Z's ui/plugins/20_agent.lua unchanged"
+# …then merge it, and let the tests say whether Agent and Shell still match.
+git switch main && git merge vendor-vX.Y.Z
+```
+
+`tests/agent.lua` loads the pinned tag's pane beside this one and fails if the
+Agent or Shell tab draws or routes a key differently, so bump `THURBOX_TAG` in
+`.github/workflows/ci.yml` in the same change.
+
+**It costs the Agent tab its `pure` flag.** The review parses a large diff a
+bite per render, and a pure pane is not rendered again until something it read
+changes — so this pane renders every frame, where thurbox's is skipped when
+nothing moved. `MEASUREMENTS.md` has the number: about a tenth of one of the
+kernel's instruction batches a frame.
 
 ## The one rule
 
@@ -175,7 +302,15 @@ ideas share a variable the rule is gone.
 
 ## How it is built
 
-Two shapes in one pane, which is design.md **D2**:
+The agent pane draws the frame on every tab — the tab strip on the top border,
+the title on the right of it — and on the Review tab it hands the render, keys
+and clicks to `lib/review.lua`. The review puts its key hints on the bottom
+border and its scrollbar on the right border column, both overlays of the same
+kernel frame, so they cost no content row or column. A review that throws is
+drawn as an error inside that frame, under the strip, so a bug in the diff code
+never takes the terminal tabs with it.
+
+Two shapes inside the frame, which is design.md **D2**:
 
 - the **changed-files list is a tree** — `text` rows carrying `id` and
   `role = "row"`, so they are selectable, clickable and decoratable by a pane
@@ -193,12 +328,12 @@ mechanically.
 
 The body is **clickable** through the same primitive: a `surface` takes an `id`
 like any node, the kernel records its rect, and a click arrives with `x`/`y`
-inside it. The pane resolves that to a logical row from the map it drew — which
+inside it. The review resolves that to a logical row from the map it drew — which
 it can, because it decided where every row went. Per-line identity in the node
 tree was never the only way to be clickable.
 
 Colour is roles only — `diff_added`, `diff_removed`, `diff_added_bg`,
-`diff_removed_bg`, `branch_name`, `selection_*` — so the pane is themed by all
+`diff_removed_bg`, `branch_name`, `selection_*` — so the review is themed by all
 36 presets, and by any theme you wrote, without this file knowing they exist.
 
 **The code is coloured too**, by a small language-agnostic lexer in
@@ -215,7 +350,7 @@ that is real and worth knowing: on a theme where `branch_name` and `diff_added`
 resolve to the same colour, a string inside an added line matches its `+` sign.
 
 The parser is **incremental**: it reads a bounded number of lines per frame and
-the pane draws what exists so far. `MEASUREMENTS.md` records why, and what was
+the review draws what exists so far. `MEASUREMENTS.md` records why, and what was
 measured to pick the number.
 
 Five states, each drawn differently, because the kernel is explicit that they
@@ -237,13 +372,12 @@ reads. A slow diff must never look like a clean worktree.
 **Comments and review marks do not persist.** The kernel still has the storage
 v1 used — `storage::review`, `review_comments` and `review_marks`, schema v38,
 keyed on the write-once `sessions.base_branch` — but none of it is published to
-Lua and there is no command to write one. So `c` and `s` are declared, appear in
-`F1`, and say what is missing instead of pretending. `m` keeps its marks in
-`state`, which survives a reload and **not** a restart; the footer calls them
-"seen" rather than "reviewed" for that reason.
+Lua and there is no command to write one. `m` keeps its marks in `state`, which
+survives a reload and **not** a restart; the footer calls them "seen" rather than
+"reviewed" for that reason.
 
 `KERNEL-GAPS.md` states the exact read and command that would close comments, and
-the smaller gaps ranked by what using the pane actually made me want.
+the smaller gaps ranked by what using the review actually made me want.
 
 ## Notes
 
@@ -268,15 +402,15 @@ trimmed it — in the markdown v1 sent:
 
 **Notes are lost when thurbox quits.** They survive an `F10` reload and not a
 restart, because `state` — the plugin store — is an in-memory map the kernel
-never writes to disk, whatever the docs used to say. The pane tells you so on the
-line where you are typing, not only here.
+never writes to disk, whatever the docs used to say. The review tells you so on
+the line where you are typing, not only here.
 
 That is the sitting they are for: read a diff, note what you find, send it. The
 **sending** is not provisional — `command("send", …)` has always worked. Durable
 notes need the kernel to persist plugin state, or to publish the
 `review_comments` table it already carries; `KERNEL-GAPS.md` §1 has both shapes,
 and the general one is the better ask. If it lands, these notes stop evaporating
-without this pane changing.
+without the review changing.
 
 ## Marking and folding are two things
 
@@ -319,23 +453,29 @@ can still be ticked off.
 ## Developing
 
 ```bash
-# Both test scripts need thurbox's `ui/` at the tag CI pins. A checkout works,
-# or just the tree: git -C <thurbox> archive v2.24.1 ui thurbox.yml | tar -x -C <dir>
+# The Lua tests need thurbox's `ui/` at the tag CI pins. A checkout works, or
+# just the tree: git -C <thurbox> archive v2.25.0 ui thurbox.yml | tar -x -C <dir>
 export THURBOX_REPO=/path/to/thurbox
 
 selene .                      # the sandbox contract, statically
 stylua --check .
 thurbox-cli plugin check      # loads the interface the way thurbox does
 tests/run.sh                  # the pure modules, under a real Lua
-tests/run.sh --render         # the pane's own node tree
+tests/run.sh --render         # the review's node tree, and the agent pane's tabs
 tests/run.sh --measure        # the cost, in the kernel's own unit
-tests/render-proof.sh         # the pane actually painting, in a real thurbox
+tests/render-proof.sh         # the tabs and the review, in a real thurbox
 ```
 
 `.publish.yaml` declares the same checks as the gate, and CI
 (`.github/workflows/ci.yml`) runs them against the pinned thurbox tag, plus
-`plugin check` on a real install made with that release's `thurbox-cli`. The
-vendored `thurbox.yml` must match the tag's; CI says so when it drifts.
+`plugin check` on a real install made with that release's `thurbox-cli` — with
+the bundled agent pane deleted as step 3 says, asserting one `agent` and no
+warning. The vendored `thurbox.yml` must match the tag's; CI says so when it
+drifts.
+
+`tests/render-proof.sh` runs against a release as well as a checkout: extract
+`ui/` and `scripts/dev/lib/` from the tag into `THURBOX_REPO` and point
+`THURBOX_BIN` at that release's binaries.
 
 The GIF above is `demo/record.sh`: a throwaway thurbox (`demo/sandbox.sh` — its
 own `HOME`, XDG roots and tmux socket, and a made-up project) recorded with
@@ -343,23 +483,23 @@ asciinema, driven by tmux because F7 is an F-key, and rendered with agg. It
 refuses to render a cast that contains the recording machine's username,
 hostname or paths.
 
-`THURBOX_BIN` points `render-proof.sh` at a *snapshot* of the binaries instead of
-the checkout's `target/debug`. Worth using: a checkout is a live working tree, and
-a rebuild during a run replaces the binary underneath it.
-
 Three layers, because each catches what the one below cannot:
 
 - **`plugin check`** loads the interface but never calls `render`, so it cannot
   tell a pane that draws from a pane that throws.
 - **`tests/run.sh --render`** calls `render` against a faked snapshot and asserts
   on the node tree — including, mechanically, that every node kind is one of the
-  four. A screenshot shows *what* was painted; this shows *why*.
+  four, and that the Agent and Shell tabs are thurbox's own. A screenshot shows
+  *what* was painted; this shows *why*.
 - **`tests/render-proof.sh`** stands up a hermetic thurbox in a tmux pane with
-  real sessions, worktrees and base branches, drives it with keys, and captures
-  the frames.
+  real sessions, worktrees and base branches, drives it with keys and mouse
+  reports, and captures the frames. It is where the things only a real kernel
+  decides are asserted: that the review's letters reach the agent on the Agent
+  tab, that `Ctrl+H` / `Ctrl+L` have two stops, and that a click on a chip selects
+  its tab.
 
-Between them they found every bug this pane has had: the scrollbar's missing `▼`,
-a footer that advertised a bare `e` with no label, a files list that printed
+Between them they found every bug this review has had: the scrollbar's missing
+`▼`, a footer that advertised a bare `e` with no label, a files list that printed
 `src/` twice, a search box that refreshed the diff when you typed the `r` in
 "greet", and file rows that went dead while a large diff was still parsing.
 

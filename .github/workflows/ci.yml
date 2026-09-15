@@ -12,7 +12,7 @@ on:
 # and the `ui/` tree it loads have to be the same version: the tests load that
 # tag's real `lib.widgets`, and `thurbox.*` is a contract that moves.
 env:
-  THURBOX_TAG: v2.24.1
+  THURBOX_TAG: v2.25.0
 
 jobs:
   lint:
