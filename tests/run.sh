@@ -43,7 +43,13 @@ if [ "${1:-}" = "--measure" ]; then
 fi
 
 if [ "${1:-}" = "--render" ]; then
-  REPO="$HERE" UI="$UI" exec lua "$HERE/tests/render.lua"
+  # Both, even when the first fails: the review body's tree and the agent pane's
+  # tabs are two different questions, and one red answer should not hide the
+  # other.
+  status=0
+  REPO="$HERE" UI="$UI" lua "$HERE/tests/render.lua" || status=1
+  REPO="$HERE" UI="$UI" lua "$HERE/tests/agent.lua" || status=1
+  exit "$status"
 fi
 
 REPO="$HERE" UI="$UI" exec lua "$HERE/tests/modules.lua"

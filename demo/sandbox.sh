@@ -169,6 +169,9 @@ git_demo -C "$W" commit -qm "expire cached forecasts"
 # Installed from committed state, under the name the pane requires itself by.
 git clone -q "$REPO" "$S/src/thurbox-code-review"
 "$CLI" plugin install "git+file://$S/src/thurbox-code-review" >/dev/null
+# This repository's agent pane replaces the bundled one, as the README's install
+# says: two `agent` panes would both load.
+rm "$XDG_CONFIG_HOME/thurbox/ui/plugins/20_agent.lua"
 
 # The first launch asks whether to continue to v2 and waits for an answer. A
 # recording is about the pane, so the answer is recorded up front.

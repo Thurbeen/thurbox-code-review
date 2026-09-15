@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Record media/demo.gif: the real TUI, in a throwaway thurbox the pane was
+# Record media/demo.gif: the real TUI, in a throwaway thurbox this agent pane was
 # installed into (demo/sandbox.sh).
 #
 # asciinema records the pty and agg rasterises the cast — not VHS, which drives
-# a headless browser and cannot send an F-key, and F7 is the way into this pane.
+# a headless browser and cannot send an F-key, and F7 is the way onto the tab.
 # tmux is what presses the keys, so what lands in the cast is the interface
 # reacting to real chords.
 #
@@ -45,6 +45,10 @@ export HOME="$S"
 export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$S/.local/share"
 export XDG_STATE_HOME="$S/.local/state" XDG_CACHE_HOME="$S/.cache"
 export TMUX_TMPDIR="$S/tmux" TERM=xterm-256color
+# The Shell tab starts \$SHELL. Pinned, so the recording shows a plain prompt
+# rather than the recording machine's shell and its first-run setup, or a
+# prompt carrying a user and host name.
+export SHELL=/bin/sh PS1='\$ '
 unset THURBOX_CONFIG_DIR THURBOX_DATA_DIR THURBOX_UI_DIR
 cd "$S/weather-cli"
 exec $(command -v "$THURBOX")
@@ -78,9 +82,19 @@ done
 sleep 2
 snap 0-start
 
-# In. F7 is the chord a user presses.
+# The strip: Agent / Shell / Review, three tabs of one pane. F8 is the shell the
+# pane always had; F7 is the review beside it.
+k F8 2
+snap 0-shell
 k F7 2.5
 snap 1-review
+
+# Ctrl+H / Ctrl+L walk the panes, and the review is not one of them: focus goes to
+# the session list and back, and the review never leaves the screen.
+k C-h 1.5
+snap 1-ring-sessions
+k C-l 1.5
+snap 1-ring-back
 
 # Down the new test file, then to the next file and into its first change.
 k j; k j; k j; k j 1
@@ -116,7 +130,8 @@ type_slowly "a timeout here needs a test"
 k Enter 2
 snap 6-two-notes
 
-# Send it to the agent, which is where a review goes.
+# Send it to the agent, which is where a review goes — and the pane shows the
+# Agent tab, to watch it arrive.
 k e 4
 snap 7-sent
 

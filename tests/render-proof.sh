@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 #
-# Proves the review pane actually PAINTS: a hermetic thurbox in a tmux pane,
-# a real session with a real worktree and a real base branch, driven by keys,
-# with the frames captured as text.
+# Proves the Review tab actually PAINTS, and that it is a TAB: a hermetic
+# thurbox in a tmux pane, real sessions with real worktrees and base branches,
+# driven by keys and mouse reports, with the frames captured as text.
 #
 # `plugin check` loads the interface but never calls `render`, so this is the
-# only thing that can tell a pane that draws from a pane that throws.
+# only thing that can tell a pane that draws from a pane that throws — and the
+# only thing that can see where a key went once the kernel routed it.
 set -euo pipefail
 
-# The thurbox checkout to build the kernel from. `thurbox-cli plugin` does not
-# exist in a released 1.x binary, and this needs a v2 kernel anyway.
-REPO_ROOT="${THURBOX_REPO:?set THURBOX_REPO to a thurbox checkout with target/debug built}"
+# Where thurbox's `ui/` and `scripts/dev/lib/` come from: a checkout, or both
+# extracted from a release tag (`git archive v2.24.1 ui scripts/dev/lib`) with
+# THURBOX_BIN naming that release's binaries.
+REPO_ROOT="${THURBOX_REPO:?set THURBOX_REPO to a thurbox checkout, or the ui/ and scripts/dev/lib/ of a release tag}"
 # A scratch interface: the shipped `ui/` copied out of the checkout, with this
 # repository symlinked in and named by a plugins.toml entry. Never inside either
 # working copy — a dirty tree is what makes `plugin update` refuse to move.
@@ -40,6 +42,10 @@ if [ ! -d "$UI_DIR/thurbox-code-review" ]; then
   log "seeding a scratch interface at $UI_DIR"
   mkdir -p "$UI_DIR"
   cp -r "$REPO_ROOT/ui/layout.lua" "$REPO_ROOT/ui/lib" "$REPO_ROOT/ui/plugins" "$UI_DIR"/
+  # The bundled agent pane goes, as the README's install says: this repository's
+  # agent pane replaces it, and two `agent` panes is not the arrangement a user
+  # is told to make.
+  rm "$UI_DIR/plugins/20_agent.lua"
   ln -sfn "$HERE" "$UI_DIR/thurbox-code-review"
   cat > "$UI_DIR/plugins.toml" <<TOML
 # Development spec: the working copy is symlinked in, so an edit to the
@@ -47,9 +53,10 @@ if [ ! -d "$UI_DIR/thurbox-code-review" ]; then
 # for a pane outside \`plugins/\` — see kernel::host, the \`nested\` list.
 [[plugin]]
 src  = "git+file://$HERE"
-file = "thurbox-code-review/plugins/40_review.lua"
+file = "thurbox-code-review/plugins/20_agent.lua"
 TOML
 fi
+[ ! -e "$UI_DIR/plugins/20_agent.lua" ] || die "$UI_DIR still has the bundled agent pane — remove it or the scratch interface"
 
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/dev/lib/sandbox-env.sh"
@@ -65,9 +72,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# A dev build keeps its config under `thurbox-dev`, a release under `thurbox`;
+# the binary says which by where it keeps its data.
+PROFILE="$(basename "$("$BIN_DIR/thurbox-cli" version --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["data_dir"])')")"
+CONFIG="$XDG_CONFIG_HOME/$PROFILE"
+
 # --- an agent that is just a shell, so nothing tries to authenticate ---------
-mkdir -p "$XDG_CONFIG_HOME/thurbox-dev"
-cat > "$XDG_CONFIG_HOME/thurbox-dev/agents.toml" <<'TOML'
+mkdir -p "$CONFIG"
+cat > "$CONFIG/agents.toml" <<'TOML'
 config_version = 1
 default = "sh"
 
@@ -150,8 +162,8 @@ git add -A && git commit -qm "move the notes, drop the old ones"
 #
 # Reported to the kernel session as a gap: a capability that can only be granted
 # by hand is a capability that cannot be exercised in CI.
-PANE="$UI_DIR/thurbox-code-review/plugins/40_review.lua"
-python3 - "$PANE" "$XDG_CONFIG_HOME/thurbox-dev/ui.json" <<'PYTRUST'
+PANE="$UI_DIR/thurbox-code-review/plugins/20_agent.lua"
+python3 - "$PANE" "$CONFIG/ui.json" <<'PYTRUST'
 import json, sys, pathlib
 
 pane, out = sys.argv[1], pathlib.Path(sys.argv[2])
@@ -227,12 +239,12 @@ fi
 wait_for "review-demo"
 shot 00-start
 
-# ── the focus round trip ────────────────────────────────────────────────────
+# ── the review is a TAB ─────────────────────────────────────────────────────
 #
-# One key in, the same key out. The kernel remembers where focus came from and
-# `toggle` reads that memory, so this pane names no pane to go back to. Asserted
-# rather than eyeballed: it is the property that decides whether a user can
-# leave a pane that occupies a switch slot.
+# Review is the agent pane's third tab, beside Shell. So everything here is about
+# ONE pane: focus never moves to a review, the ring has two stops however many
+# tabs the pane has, and what the centre shows changes only when a tab key or a
+# chip asks. The band's first word names the focused pane.
 focused() { tail -1 "$(capture > "$OUT/.focus.txt"; echo "$OUT/.focus.txt")" | sed -n 's/^ *\([A-Za-z]*\) .*/\1/p'; }
 expect_focus() {
   sleep 0.7
@@ -240,68 +252,138 @@ expect_focus() {
   if [ "$who" = "$1" ]; then
     log "  focus is $who — $2"
   else
-    capture > "$OUT/focus-fail-$2.txt"
-    die "expected focus $1, got '$who' after: $2"
+    capture > "$OUT/focus-fail.txt"
+    die "expected focus $1, got '$who' after: $2 (frame in $OUT/focus-fail.txt)"
   fi
 }
 
-log "focus round trip (from a cold launch, agent focused)"
+# The review's footer is on screen in every state it has; a terminal tab has none.
+on_review() { capture | grep -qE ' r refresh|Review what'; }
+expect_review() {
+  sleep 0.7
+  on_review || { capture > "$OUT/tab-fail.txt"; die "expected the Review tab after: $1 (frame in $OUT/tab-fail.txt)"; }
+  log "  the review is showing — $1"
+}
+expect_terminal() {
+  sleep 0.7
+  ! on_review || { capture > "$OUT/tab-fail.txt"; die "expected a terminal tab after: $1 (frame in $OUT/tab-fail.txt)"; }
+  log "  a terminal is showing — $1"
+}
+# F7 toggles, so "show the review" is a question before it is a key.
+open_review() {
+  sleep 0.8
+  on_review || send F7
+}
+
+# A press and a release on the first cell of `needle`, as a terminal reports them
+# to a program that asked for mouse reports: SGR, `CSI < 0 ; col ; row M` then `m`.
+click_on() {
+  local needle="$1" where col row hex
+  where="$(capture | python3 -c '
+import sys
+needle = sys.argv[1]
+for row, line in enumerate(sys.stdin.read().split("\n"), start=1):
+    at = line.find(needle)
+    if at >= 0:
+        print(at + 1, row)
+        break
+' "$needle")"
+  [ -n "$where" ] || die "nothing on screen reads: $needle"
+  col="${where% *}" row="${where#* }"
+  hex="$(printf '\033[<0;%d;%dM\033[<0;%d;%dm' "$col" "$row" "$col" "$row" | od -An -tx1 | tr -s ' \n' ' ')"
+  # shellcheck disable=SC2086
+  send -H $hex
+}
+
+FIRSTID="$(python3 -c "import json;d=json.load(open('$OUT/session.json'));print(d.get('id') or d.get('session',{}).get('id',''))")"
+
+log "the strip names three tabs"
+wait_for "Agent ─ Shell · F8 ─ Review · F7"
 expect_focus Agent "cold launch"
-send F7;     expect_focus Review "F7 in"
-send F7;     expect_focus Agent  "F7 out"
-send F7;     expect_focus Review "F7 in again"
-send Escape; expect_focus Agent  "Esc out"
+expect_terminal "cold launch"
 
-# And from inside a FOCUSED TERMINAL, which is the case the F-key exists for:
-# a bare Ctrl+<letter> is left to the program, so Ctrl+X would not arrive.
-send F7;     expect_focus Review "F7 in from the agent"
-send Escape; expect_focus Agent  "Esc back to the terminal"
-send F7;     expect_focus Review "F7 in, once more"
-send F7;     expect_focus Agent  "F7 out, once more"
+# Every key the review declares is declared on THIS pane, so on the Agent tab each
+# one has to be declined for the agent to get it. `e c h o t a b s` and Enter are
+# all review keys; Esc and Tab are the two a terminal program cannot do without.
+log "on the Agent tab, the review's keys reach the agent"
+send -l 'echo tabs-$((6*7))'; send Enter
+wait_for "tabs-42"
+log "  letters and Enter reached bash"
+send -l "IFS= read -rsn1 k; printf 'got:%d\\n' \"'\$k\""; send Enter; sleep 0.6; send Escape
+wait_for "got:27"
+log "  Esc reached bash"
+send -l "IFS= read -rsn1 k; printf 'got:%d\\n' \"'\$k\""; send Enter; sleep 0.6; send Tab
+wait_for "got:9"
+log "  Tab reached bash"
 
-# The case that matters: opened from the SESSION LIST, the way out is still the
-# agent. `toggle` would have gone back to the list, which is not what closing a
-# review means.
-send C-h;    expect_focus Sessions "focus moved to the session list"
-send F7;     expect_focus Review   "F7 in from the list"
-send F7;     expect_focus Agent    "F7 out lands on the agent, not the list"
-send C-h;    expect_focus Sessions "back to the list"
-send F7;     expect_focus Review   "F7 in from the list again"
-send Escape; expect_focus Agent    "Esc lands on the agent too"
+log "the tab keys switch tabs, and focus stays on the agent pane"
+send F7;     expect_review   "F7";                expect_focus Agent "F7 shows a tab, it does not move focus"
+send F7;     expect_terminal "F7 again"
+send F8;     wait_for "(shell)"; expect_terminal "F8 shows the shell"
+send F7;     expect_review   "F7 from the shell"
+send F8;     wait_for "(shell)"; expect_terminal "F8 from the review shows the shell"
+send F8;     expect_terminal "F8 again, back to the agent"
+send F7;     expect_review   "F7 in"
+send Escape; expect_terminal "Esc on the review shows the agent"
 
-# ── the focus RING ──────────────────────────────────────────────────────────
-#
-# `Ctrl+H` / `Ctrl+L` walk the panes. This pane shares the centre `switch` slot
-# with the agent, and exactly one of the two is on screen — so the ring should
-# have TWO stops, not three, and walking it should never bring forward the pane
-# you did not ask for.
-#
-# It has three. `kernel::focus::can_focus` admits a switch alternate on purpose
-# (focusing one is what makes it drawn, which is how `F7` and the pill work), and
-# `cycle_focus` asks the same question — so `Ctrl+L` from the agent lands on the
-# review and displaces it. KERNEL-GAPS.md §7 has the fix.
-#
-# Reported rather than asserted, because the ring is the kernel's and a red test
-# here would be reporting someone else's schedule as this pane's failure. It goes
-# quiet on its own the day the ring is fixed.
+log "the focus ring has two stops, and walking it changes no tab"
 ring() {
-  local out=""
+  local key="$1" out=""
   for _ in 1 2 3; do
-    send C-l
+    send "$key"
     sleep 0.6
     out="$out $(focused)"
+    on_review || { capture > "$OUT/ring-fail.txt"; die "$key took the review off screen"; }
   done
   printf '%s' "${out# }"
 }
-
-log "the focus ring, from the agent"
-FROM_AGENT="$(ring)"
+send F7; expect_review "before the ring"
+FROM_AGENT="$(ring C-l)"
 log "  Ctrl+L x3 -> $FROM_AGENT"
-if [ "$FROM_AGENT" = "Sessions Agent Sessions" ]; then
-  log "  the ring walks past the pane it cannot see"
-else
-  log "  PENDING KERNEL: want 'Sessions Agent Sessions', got '$FROM_AGENT' (KERNEL-GAPS 7)"
-fi
+[ "$FROM_AGENT" = "Sessions Agent Sessions" ] || die "want 'Sessions Agent Sessions', got '$FROM_AGENT'"
+FROM_LIST="$(ring C-h)"
+log "  Ctrl+H x3 -> $FROM_LIST"
+[ "$FROM_LIST" = "Agent Sessions Agent" ] || die "want 'Agent Sessions Agent', got '$FROM_LIST'"
+expect_focus Agent "after the ring"
+
+log "a click on a chip selects its tab"
+send F7; expect_terminal "before clicking"
+click_on "Review · F7";   expect_review   "a click on Review"
+click_on "Agent ─ Shell"; expect_terminal "a click on Agent"
+send C-h; expect_focus Sessions "focus on the session list"
+click_on "Review · F7";   expect_review   "a click on Review from the list"
+expect_focus Agent "a click focuses the pane, as Shell's chip does"
+click_on "Shell · F8";    wait_for "(shell)"; expect_terminal "a click on Shell"
+send F8; expect_terminal "back to the agent"
+
+log "each session keeps its own tab"
+"$BIN_DIR/thurbox-cli" session create \
+  --name second --repo-path "$WORK" \
+  --worktree-branch feat/second --base-branch main --agent sh --json > "$OUT/second.json"
+SECONDID="$(python3 -c "import json;d=json.load(open('$OUT/second.json'));print(d.get('id') or d.get('session',{}).get('id',''))")"
+select_session "$FIRSTID"
+open_review; expect_review "the first session on its review"
+select_session "$SECONDID"
+expect_terminal "the second session opens on its agent"
+send F8; wait_for "(shell)"; expect_terminal "the second session on its shell"
+select_session "$FIRSTID"
+expect_review "the first session is still on its review"
+select_session "$SECONDID"
+wait_for "(shell)"; expect_terminal "the second session is still on its shell"
+select_session "$FIRSTID"
+
+# Reported rather than asserted: Ctrl+X is `passthrough`, so with a live terminal
+# focused it is the agent's — which is why F7 is the chord the strip shows.
+log "Ctrl+X, for the README"
+sleep 0.6; on_review && send F7
+expect_terminal "before Ctrl+X"
+send C-x; sleep 0.8
+if on_review; then log "  Ctrl+X on the Agent tab: showed the review"; else log "  Ctrl+X on the Agent tab: went to the agent"; fi
+open_review; expect_review "before Ctrl+X on the review"
+send C-x; sleep 0.8
+if on_review; then log "  Ctrl+X on the Review tab: stayed on the review"; else log "  Ctrl+X on the Review tab: showed the agent"; fi
+on_review && send F7
+expect_terminal "after Ctrl+X"
 
 # Leave focus somewhere KNOWN, by ASKING rather than by counting hops. The first
 # version of this probe assumed where the walk ended, and every capture after it
@@ -432,7 +514,8 @@ send F7
 shot 21-no-changes 1.5
 
 select_session "$SMALLID"
-send F7
+# Still on its review: each session keeps its tab, so F7 here would close it.
+open_review
 shot 22-back
 
 # Narrow: the files column is dropped, and the pane decides that from the width
@@ -560,8 +643,8 @@ printf 'build noise\n' > debug.log
 printf '*.log\n' > .gitignore
 
 select_session "$(python3 -c "import json;d=json.load(open('$OUT/session.json'));print(d.get('id') or d['session']['id'])")"
-send F7
-wait_for "Code review"
+open_review
+wait_for " r refresh"
 shot 40-branch-again 1.5
 
 send t

@@ -1,15 +1,19 @@
-# The code-review pane.
+# The code-review plugin: thurbox's agent pane, with a Review tab beside Agent and
+# Shell.
 #
-# This plugin is several files — a pane and the modules it requires — so it is
+# This plugin is several files — the pane and the modules it requires — so it is
 # installed by CLONING it:
 #
 #     thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
 #
 # The clone lands at `<interface dir>/thurbox-code-review/`, keeps its `.git` (so
 # `update` is a fetch and your edits are protected), and `pane.source` below names
-# the entry point inside it. Failing a manifest, install takes the single `.lua`
-# under `plugins/` — which would work here, since there is exactly one, but then
-# nothing would carry the name, the version or what it needs.
+# the entry point inside it.
+#
+# The pane is a fork of the agent pane thurbox ships, and it REPLACES it: both are
+# named `agent` and both occupy the `center` slot. `install` does not remove the
+# bundled `plugins/20_agent.lua` — deleting (or turning off) that file is the
+# README's install step 3, and `plugin check` then loads one `agent`.
 #
 # The modules are NOT listed as `[[module]]`. That list is for the file-by-file
 # delivery path, which copies each file to a destination in the interface
@@ -19,20 +23,22 @@
 # Nothing is fetched or built at install time, and ONE capability is asked for:
 # `run`, and only for the two review targets the kernel does not compute — the
 # uncommitted working changes of a session that has a base branch, and a single
-# commit. Everything else comes from `thurbox.diffs`, which the kernel computes
-# on a worker.
+# commit. Everything else comes from `thurbox.diffs`, which the kernel computes on
+# a worker. Because the review is a tab of the agent pane, the grant is made to
+# the agent pane's file.
 #
-# Untrusted, the pane works: `run` is absent, the kernel's diff draws exactly as
-# it did before there was a picker, and `t` names the choices it cannot serve
-# rather than hiding them. See the README.
+# Untrusted, the review works: `run` is absent, the kernel's diff draws, and `t`
+# names the choices it cannot serve rather than hiding them. See the README.
 name = "code-review"
-description = "The diff of a session's worktree against its base branch, reviewable in the TUI"
-version = "v0.1.0"
+description = "thurbox's agent pane with a Review tab: a session's diff, reviewable beside its terminal"
+version = "v0.2.0"
 
-# The kernel reads this pane needs: `store.selected`-driven diffs with
-# `base_branch` on the session row, a file list built independently of the capped
-# body, `command("focus", { toggle })`, and `run` with `thurbox.runs`. All of
-# them are v2 plugin-kernel.
-requires_thurbox = ">=2.0"
+# The agent pane is vendored from thurbox v2.25.0, where that file is unchanged
+# since v2.19.0; CI tests v2.25.0, and it installs and loads on v2.24.0 and
+# v2.24.1, whose agent pane and review-relevant interface are the same. The
+# review needs `store.selected`-driven
+# diffs with `base_branch` on the session row, a file list built independently of
+# the capped body, frame overlays, and `run` with `thurbox.runs`.
+requires_thurbox = ">=2.24.0"
 
-pane = { source = "plugins/40_review.lua", path = "plugins/40_review.lua" }
+pane = { source = "plugins/20_agent.lua", path = "plugins/20_agent.lua" }

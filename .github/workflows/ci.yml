@@ -12,7 +12,7 @@ on:
 # and the `ui/` tree it loads have to be the same version: the tests load that
 # tag's real `lib.widgets`, and `thurbox.*` is a contract that moves.
 env:
-  THURBOX_TAG: v2.24.1
+  THURBOX_TAG: v2.25.0
 
 jobs:
   lint:
@@ -78,7 +78,8 @@ jobs:
       - name: Install and load it
         # HOME and XDG pointed at the workspace so nothing real is read or
         # written. `install` seeds the stock interface, clones the pane beside it
-        # and records it; `check` loads the result as the TUI would.
+        # and records it; the bundled agent pane is deleted, as the README's
+        # install step says; `check` loads the result as the TUI would.
         env:
           HOME: ${{ github.workspace }}/home
           XDG_CONFIG_HOME: ${{ github.workspace }}/home/.config
@@ -86,4 +87,17 @@ jobs:
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
           ./thurbox-cli plugin install "git+file://$GITHUB_WORKSPACE/thurbox-code-review"
+          rm "$XDG_CONFIG_HOME/thurbox/ui/plugins/20_agent.lua"
           ./thurbox-cli plugin check --text
+          ./thurbox-cli plugin check --json > check.json
+      - name: One agent pane, and no review pane beside it
+        # The review is a tab of the agent pane, so the loaded set has exactly one
+        # `agent` and no `review`: nothing else occupies the centre, which is what
+        # keeps Ctrl+H / Ctrl+L from stopping on a review nobody can see. No
+        # warnings either — a second `center` occupant is one.
+        run: |
+          jq . check.json
+          jq -e '.ok' check.json
+          jq -e '[.loaded[] | select(. == "agent")] | length == 1' check.json
+          jq -e '[.loaded[] | select(. == "review")] | length == 0' check.json
+          jq -e '.warnings | length == 0' check.json
