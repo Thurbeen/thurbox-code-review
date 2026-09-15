@@ -120,8 +120,9 @@ after  ╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ── weather (cla
    - `F7`, from any pane — press it again to go back to the agent;
    - a click on the `Review · F7` chip;
    - `Ctrl+P` → `review` → *review this session's changes*;
-   - `Ctrl+X`, but only from a pane with no terminal, such as the session list:
-     a focused terminal keeps `Ctrl+X` for the program in it.
+   - `Ctrl+X`, but only from outside the agent pane, such as the session list.
+     Inside it `Ctrl+X` is left to the terminal — and on the Review tab, which
+     has no terminal to hand it to, it does nothing.
 
    `Esc` on the Review tab shows the agent again, and so does `e` after sending
    the notes.
@@ -168,6 +169,8 @@ again).
 - no `agent` at all — this pane is off. Do step 5. A load error shows on its row
   in the Interface tab, and in `thurbox-cli plugin list`.
 - an older thurbox — `thurbox-cli version` below 2.24.0. Upgrade thurbox.
+- `agent`, and still no Review chip — thurbox's `code_review = false` under
+  `[features]` turns the tab off, the way `shell_pane = false` turns off Shell.
 
 **Two agent panes are enabled.** This happens with the bundled pane, or with
 another fork such as thurbox-files' `20_agent.lua`. Both load; the first in load
@@ -194,7 +197,7 @@ On the Review tab:
 
 | | |
 |---|---|
-| `F7` / `Ctrl+X` | show the Review tab, or the Agent tab if Review is showing (global; `Ctrl+X` only from a pane with no terminal) |
+| `F7` / `Ctrl+X` | show the Review tab, or the Agent tab if Review is showing (global; `Ctrl+X` only from outside the agent pane) |
 | `j` `k` `↑` `↓` | move by one logical row |
 | `PgUp` `PgDn` `g` `G` | page, top, bottom |
 | wheel | move by one logical row |
@@ -217,8 +220,9 @@ On the Review tab:
 | `Esc` | close the find bar, the picker or the note — or show the Agent tab |
 
 On the Agent and Shell tabs every one of these letters reaches the terminal, as
-it always did. `F1` lists them under the agent pane, because that is the pane
-that declares them.
+it always did. `F1` and `Ctrl+P` list them under the agent pane, because that is
+the pane that declares them — and a review row run from the palette does nothing
+unless the Review tab is showing, for the same reason a letter does not.
 
 `r` is refresh rather than v1's mark-reviewed, because `r` is refresh in every
 other pane and a chord that means two different things depending on where you

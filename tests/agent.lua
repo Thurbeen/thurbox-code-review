@@ -441,7 +441,6 @@ do
   for _ = 1, 4 do
     fork.on_action("review.next")
   end
-  local cursor = state_backing["sel:s1"]
   local scoped = nil
   for key, value in pairs(state_backing) do
     if key:match("^sel:s1") then
@@ -465,7 +464,13 @@ do
     state_backing[scoped and scoped.key or ""],
     scoped and scoped.value
   )
-  check("the cursor key was per session", cursor == nil or cursor == scoped.value)
+  local s2_cursor = nil
+  for key in pairs(state_backing) do
+    if key:match("^sel:s2") then
+      s2_cursor = key
+    end
+  end
+  eq("and s2, never reviewed, has no review cursor", s2_cursor, nil)
 
   store_backing.selected = "s2"
   eq("and s2 is still on its shell", terminals(fork.render(WIDE))[1], "s2#shell")
@@ -598,7 +603,7 @@ do
       eq(binding.key .. " keeps its scope", found.scope, binding.scope)
     end
   end
-  check("declares the same pure-ness question honestly", fork.input == shipped.input)
+  eq("not pure: the review parses a large diff a bite per render", fork.pure, false)
   eq("the same input routing", fork.input, "session")
   eq("the same slot", fork.slot, shipped.slot)
   eq("the same order", fork.order, shipped.order)
@@ -712,6 +717,7 @@ do
     error("boom")
   end
   local ok, tree = pcall(fork.render, WIDE)
+  local narrow_ok, narrow = pcall(fork.render, at(40))
   review.render = real
   check("the pane still renders", ok, tostring(tree))
   if ok then
@@ -728,6 +734,54 @@ do
     end)
     check("and the error said inside it", said)
   end
+  check("narrow, it still renders", narrow_ok, tostring(narrow))
+  if narrow_ok then
+    local used = utf8.len(strip_of(narrow)) + utf8.len(title_of(narrow))
+    check("and its title leaves the strip alone", used <= 40 - 2, used .. " columns")
+  end
+end
+
+print("== on the Review tab, the page keys and the wheel are the review's ==")
+do
+  reset(fork)
+  fork.on_action("review.open")
+  fork.render(WIDE)
+  fork.on_action("review.top")
+  local function cursor()
+    for key, value in pairs(state_backing) do
+      if key:match("^sel:s1") then
+        return value
+      end
+    end
+    return 1
+  end
+  check("page down is handled", fork.on_action("terminal.scroll_down"))
+  local paged = cursor()
+  check("and pages the review", paged > 2, "at " .. paged)
+  eq("not the terminal's scrollback", state_backing["scroll:s1"], nil)
+  check("page up is handled", fork.on_action("terminal.scroll_up"))
+  check("and pages back", cursor() < paged, "at " .. cursor())
+  local before = cursor()
+  check("the wheel is handled", fork.on_scroll({ up = false }))
+  check("and moves the review's cursor", cursor() > before, before .. " -> " .. cursor())
+  eq("still not the terminal's scrollback", state_backing["scroll:s1"], nil)
+end
+
+print("== [features] code_review gates Review as shell_pane gates Shell ==")
+do
+  reset(fork)
+  thurbox.settings = { features = { code_review = false } }
+  eq("no Review chip", chip(fork.render(WIDE), "Review"), nil)
+  check("F7 is swallowed", fork.on_action("review.open"))
+  eq("and shows nothing", state_backing["tab:s1"], nil)
+  check("the select action is swallowed", fork.on_action("terminal.review"))
+  eq("and shows nothing either", state_backing["tab:s1"], nil)
+
+  reset(fork)
+  thurbox.settings = { features = { shell_pane = false } }
+  local tree = fork.render(WIDE)
+  check("with the shell off instead, Review stays", chip(tree, "Review") ~= nil)
+  eq("and Shell goes", chip(tree, "Shell"), nil)
 end
 
 print(string.format("\n%d checks, %d failures", count, failures))

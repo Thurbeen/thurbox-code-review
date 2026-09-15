@@ -54,12 +54,19 @@ local NAME = "agent"
 --- value, a chip naming its select action, and a branch beside the surface in
 --- `render` returning the diff body — after which the strip covers it for the
 --- same reason it now covers the shell.
+--- review tab: this fork is that change.
 --- Is the companion shell available at all?
 ---
 --- v1 gates the pane, its chord and its tab on `[features] shell_pane`; this pane
 --- owns all three in v2, so it is the thing that has to ask.
 local function shell_enabled()
   return plugin_settings.feature("shell_pane", true) ~= false
+end
+
+-- review tab: `[features] code_review` gates the Review tab the way `shell_pane`
+-- gates Shell — its chip, its chord and its select action.
+local function review_enabled()
+  return plugin_settings.feature("code_review", true) ~= false
 end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
@@ -574,6 +581,7 @@ end
 --- plugin is: a chip whose `focus:review` role names a plugin that does not
 --- exist would light up and then do nothing, which is worse than not offering
 --- it. Re-adding the pane means re-adding its chip.
+--- review tab: this fork re-adds it below, as a tab rather than a pane.
 local function tab_specs(active)
   local specs = {
     { name = "Agent", active = active == AGENT_TAB, role = "action:" .. SELECT_AGENT },
@@ -589,13 +597,15 @@ local function tab_specs(active)
       role = "action:" .. SELECT_SHELL,
     }
   end
-  -- review tab: offered whenever a session is, as the diff is the kernel's.
-  specs[#specs + 1] = {
-    name = "Review",
-    active = active == REVIEW_TAB,
-    shortcut = shortcut_for(OPEN_REVIEW),
-    role = "action:" .. SELECT_REVIEW,
-  }
+  -- review tab: offered whenever a session is and `code_review` is on.
+  if review_enabled() then
+    specs[#specs + 1] = {
+      name = "Review",
+      active = active == REVIEW_TAB,
+      shortcut = shortcut_for(OPEN_REVIEW),
+      role = "action:" .. SELECT_REVIEW,
+    }
+  end
   return specs
 end
 
@@ -626,6 +636,7 @@ end
 ---   1. strip the `· shortcut` suffix from every label (~4 cols/chip);
 ---   2. drop the lowest-priority tab — Shell — but never Agent (the fallback
 ---      view) nor the active one, which must stay visible.
+--- review tab: Review is dropped before Shell.
 local function trim_tabs(specs, usable)
   while #specs > 1 and tabs_block_width(specs) > usable do
     local stripped = false
@@ -857,7 +868,12 @@ local function review_tab(ctx, session, level, border, strip, reserved_left)
     { { text = "the review could not be drawn", style = { fg = theme.bad, bold = true } } },
     { { text = tostring(body), style = { fg = theme.muted } } },
   })
-  failed.frame = border_frame(" " .. (session.name or "") .. " (review) ", level, border, strip)
+  failed.frame = border_frame(
+    fit_right_title(" " .. (session.name or "") .. " (review) ", ctx.width or 0, reserved_left),
+    level,
+    border,
+    strip
+  )
   return failed
 end
 
@@ -868,8 +884,9 @@ end
 --- what lets the kernel carry `j`, `tab` or `esc` on to the terminal.
 local function review_action(id, action)
   if action == OPEN_REVIEW then
-    -- The chord toggles, as `shell.open` does, and is swallowed without a session.
-    if id then
+    -- The chord toggles, as `shell.open` does, and is swallowed without a session
+    -- or with the feature off.
+    if id and review_enabled() then
       show_tab(id, tab_of(id) == REVIEW_TAB and AGENT_TAB or REVIEW_TAB)
     end
     return true
@@ -877,6 +894,9 @@ local function review_action(id, action)
   if action == SELECT_REVIEW then
     if not id then
       return false
+    end
+    if not review_enabled() then
+      return true
     end
     show_tab(id, REVIEW_TAB)
     return true
@@ -1140,7 +1160,13 @@ for _, binding in ipairs(review.KEYS) do
   pane.keys[#pane.keys + 1] = binding
 end
 pane.commands[#pane.commands + 1] = { action = SELECT_REVIEW, desc = "show the review tab" }
-pane.settings = review.SETTINGS
-pane.capabilities = review.CAPABILITIES
+pane.settings = pane.settings or {}
+for _, setting in ipairs(review.SETTINGS) do
+  pane.settings[#pane.settings + 1] = setting
+end
+pane.capabilities = pane.capabilities or {}
+for _, capability in ipairs(review.CAPABILITIES) do
+  pane.capabilities[#pane.capabilities + 1] = capability
+end
 
 return pane
