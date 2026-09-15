@@ -1,9 +1,40 @@
+diff --git a/src/coordinator/focus.rs b/src/coordinator/focus.rs
+index 12784fd..67b3ca8 100644
+--- a/src/coordinator/focus.rs
++++ b/src/coordinator/focus.rs
+@@ -52,9 +52,12 @@ impl App {
+         // arrangement), leave focus where it was rather than spinning.
+         for hop in 1..=count {
+             let next = (self.focus as isize + step * hop).rem_euclid(count) as usize;
++            // `in_ring`, not `can_focus`: the guard that stops focus stranding
++            // must admit a switch alternate, because focusing one is what brings
++            // it forward. Walking past one must not.
+             if focusable
+                 .get(next)
+-                .is_some_and(|index| self.can_focus_plugin(*index))
++                .is_some_and(|index| self.in_focus_ring(*index))
+             {
+                 self.focus = next;
+                 return;
+@@ -76,6 +79,12 @@ impl App {
+         thurbox::kernel::focus::can_focus(self.placement(index))
+     }
+ 
++    /// May the focus ring stop on this plugin? Stricter than
++    /// [`Self::can_focus_plugin`] — see `kernel::focus::in_ring`.
++    pub(crate) fn in_focus_ring(&self, index: usize) -> bool {
++        thurbox::kernel::focus::in_ring(self.placement(index))
++    }
++
+     /// Whether a plugin would be drawn right now: its slot was placed on the
+     /// last frame, or it floats above the arrangement and so needs no slot.
+     pub(crate) fn is_visible_plugin(&self, index: usize) -> bool {
 diff --git a/src/kernel/focus.rs b/src/kernel/focus.rs
-index 28f044e..2bc1939 100644
+index ae76330..c752066 100644
 --- a/src/kernel/focus.rs
 +++ b/src/kernel/focus.rs
-@@ -73,6 +73,23 @@ pub fn can_focus(placement: Placement) -> bool {
-     placement.floats || placement.slot_placed
+@@ -92,6 +92,23 @@ pub fn defer_until_placed(placement: Placement) -> bool {
+     !can_focus(placement)
  }
  
 +/// May the focus RING stop here?
@@ -26,7 +57,7 @@ index 28f044e..2bc1939 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -115,6 +132,27 @@ mod tests {
+@@ -134,6 +151,27 @@ mod tests {
          );
      }
  
@@ -54,34 +85,3 @@ index 28f044e..2bc1939 100644
      #[test]
      fn a_slot_the_arrangement_did_not_place_takes_neither() {
          // A closed column: nothing brings it forward, so focus really would
-diff --git a/src/main.rs b/src/main.rs
-index a950b61..1f0ca49 100644
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -3478,9 +3478,12 @@ impl App {
-         // arrangement), leave focus where it was rather than spinning.
-         for hop in 1..=count {
-             let next = (self.focus as isize + step * hop).rem_euclid(count) as usize;
-+            // `in_ring`, not `can_focus`: the guard that stops focus stranding
-+            // must admit a switch alternate, because focusing one is what brings
-+            // it forward. Walking past one must not.
-             if focusable
-                 .get(next)
--                .is_some_and(|index| self.can_focus_plugin(*index))
-+                .is_some_and(|index| self.in_focus_ring(*index))
-             {
-                 self.focus = next;
-                 return;
-@@ -3529,6 +3532,12 @@ impl App {
-         thurbox::kernel::focus::can_focus(self.placement(index))
-     }
- 
-+    /// May the focus ring stop on this plugin? Stricter than
-+    /// [`Self::can_focus_plugin`] — see `kernel::focus::in_ring`.
-+    fn in_focus_ring(&self, index: usize) -> bool {
-+        thurbox::kernel::focus::in_ring(self.placement(index))
-+    }
-+
-     /// Plugins may have come and gone under us; focus must land on one that
-     /// still exists.
-     fn clamp_focus(&mut self) {
