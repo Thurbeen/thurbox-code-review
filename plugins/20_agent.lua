@@ -1,3 +1,10 @@
+-- thurbox-code-review's agent pane: thurbox's own, with a Review tab.
+--
+-- review tab: vendored from thurbox v2.24.1 `ui/plugins/20_agent.lua`
+-- (unchanged upstream since v2.19.0) in the commit before the fork, so an
+-- upstream change to the pane is a git merge. Every line this fork adds or
+-- alters says `review tab:`, and the review itself is `lib/review.lua`.
+--
 -- The central terminal pane: the agent's terminal and a shell, as two TABS of
 -- one pane.
 --
@@ -32,6 +39,8 @@ local hover = require("lib.hover")
 local plugin_settings = require("lib.settings")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
+-- review tab: the diff, its keys and its settings.
+local review = require("thurbox-code-review.lib.review")
 
 --- What this plugin is called. Declared once because the pane has to name
 --- ITSELF to bring itself forward (`command("focus", …)`).
@@ -55,6 +64,9 @@ end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
 local SELECT_AGENT, SELECT_SHELL = "terminal.agent", "terminal.shell"
+-- review tab: the third view, its idempotent select action (the chip), and the
+-- chord that toggles it the way `shell.open` toggles the shell.
+local REVIEW_TAB, SELECT_REVIEW, OPEN_REVIEW = "review", "terminal.review", "review.open"
 --- Scrollback, declared rather than matched inside `on_key`: a key that only
 --- exists there is invisible to help and cannot be rebound.
 local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
@@ -100,7 +112,8 @@ end
 --- The same spelling the surface node carries and the kernel resolves, so
 --- anything keyed on it is keyed on the screen the user is actually reading.
 local function surface_of(id, tab)
-  if not id then
+  -- review tab: no terminal behind it, so nothing to scroll, snap or grab.
+  if not id or tab == REVIEW_TAB then
     return nil
   end
   return tab == SHELL_TAB and (id .. "#shell") or id
@@ -576,6 +589,13 @@ local function tab_specs(active)
       role = "action:" .. SELECT_SHELL,
     }
   end
+  -- review tab: offered whenever a session is, as the diff is the kernel's.
+  specs[#specs + 1] = {
+    name = "Review",
+    active = active == REVIEW_TAB,
+    shortcut = shortcut_for(OPEN_REVIEW),
+    role = "action:" .. SELECT_REVIEW,
+  }
   return specs
 end
 
@@ -617,7 +637,8 @@ local function trim_tabs(specs, usable)
     end
     if not stripped then
       local victim
-      for _, name in ipairs({ "Shell" }) do
+      -- review tab: the rightmost chip goes first.
+      for _, name in ipairs({ "Review", "Shell" }) do
         for index, spec in ipairs(specs) do
           if not victim and spec.name == name and not spec.active then
             victim = index
@@ -819,15 +840,74 @@ local function show_tab(id, tab)
   command("focus", { text = NAME })
 end
 
-return {
+-- --- review tab ------------------------------------------------------------
+
+--- Draw the Review tab: `lib/review.lua`'s body in this pane's frame.
+---
+--- Guarded, because one plugin is one error panel: a throw in the diff code
+--- would otherwise blank the Agent and Shell tabs with it. The error is drawn
+--- inside the frame instead, under the strip that is the way back.
+local function review_tab(ctx, session, level, border, strip, reserved_left)
+  local ok, body =
+    pcall(review.render, ctx, { border = border, strip = strip, reserved = reserved_left })
+  if ok then
+    return body
+  end
+  local failed = centered({
+    { { text = "the review could not be drawn", style = { fg = theme.bad, bold = true } } },
+    { { text = tostring(body), style = { fg = theme.muted } } },
+  })
+  failed.frame = border_frame(" " .. (session.name or "") .. " (review) ", level, border, strip)
+  return failed
+end
+
+--- Route an action that concerns the Review tab, or `nil` when it does not.
+---
+--- The review's keys are declared on this pane, so they resolve on every tab.
+--- Off the Review tab each one is DECLINED — false, touching nothing — which is
+--- what lets the kernel carry `j`, `tab` or `esc` on to the terminal.
+local function review_action(id, action)
+  if action == OPEN_REVIEW then
+    -- The chord toggles, as `shell.open` does, and is swallowed without a session.
+    if id then
+      show_tab(id, tab_of(id) == REVIEW_TAB and AGENT_TAB or REVIEW_TAB)
+    end
+    return true
+  end
+  if action == SELECT_REVIEW then
+    if not id then
+      return false
+    end
+    show_tab(id, REVIEW_TAB)
+    return true
+  end
+  local showing = id ~= nil and tab_of(id) == REVIEW_TAB
+  local function back()
+    show_tab(id, AGENT_TAB)
+  end
+  if showing and (action == SCROLL_UP or action == SCROLL_DOWN) then
+    return review.on_action(action == SCROLL_UP and "review.page_up" or "review.page_down", back)
+  end
+  if string.sub(action, 1, 7) == "review." then
+    if not showing then
+      return false
+    end
+    return review.on_action(action, back)
+  end
+  return nil
+end
+
+local pane = {
   name = NAME,
   slot = "center",
-  slot_mode = "switch", -- review is still an occupant of its own
+  slot_mode = "switch", -- review tab: upstream's line; nothing else occupies the centre
   -- Pure: the tree is a surface node naming a session, not the terminal's
   -- contents. What moves under a printing agent is the vt100 grid the surface
   -- is painted from, which is not in the tree at all — so the tree can be
   -- reused every frame and the pane still repaints.
-  pure = true,
+  -- review tab: NOT pure. The review parses a large diff a bite per render, and a
+  -- pure pane is not rendered again until something it read changes.
+  pure = false,
   -- Keys this plugin does not handle go straight to the pty of whichever view
   -- is showing. That is what makes this an ordinary plugin rather than a kernel
   -- special case: replace the file and the terminal behaviour goes with it.
@@ -899,6 +979,10 @@ return {
     -- the whole reason the views share one plugin.
     local tab = tab_of(session.id)
     local strip, reserved_left = border_strip(width, border, tab)
+    -- review tab: the diff, inside the same frame, under the same strip.
+    if tab == REVIEW_TAB then
+      return review_tab(ctx, session, level, border, strip, reserved_left)
+    end
     -- Both views are live terminals with a scrollback each, so the offset is
     -- the one this SURFACE is holding — which is also the one the kernel will
     -- set on the parser it draws.
@@ -972,13 +1056,21 @@ return {
   -- outer terminal means, and it is what a forwarded tick already delivers.
   on_scroll = function(wheel)
     local id = store.selected
+    -- review tab: the wheel moves the review's cursor, a line a report.
+    if id and tab_of(id) == REVIEW_TAB then
+      return review.on_action(wheel.up and "review.previous" or "review.next", function() end)
+    end
     return scroll_surface(surface_of(id, tab_of(id)), wheel.up and 1 or -1)
   end,
 
   -- Every key this pane does not claim goes on to the agent, and typing
   -- belongs at the live end of the stream: the offset is dropped and the key
   -- is DECLINED, so it still reaches the pty.
-  on_key = function()
+  on_key = function(key)
+    -- review tab: the find query and a note being written take raw keys.
+    if store.selected and tab_of(store.selected) == REVIEW_TAB then
+      return review.on_key(key)
+    end
     snap_to_bottom(store.selected)
     return false
   end,
@@ -987,6 +1079,10 @@ return {
   -- rather than a report. Everything else on the border is a chip the kernel
   -- resolves itself through a click verb.
   on_click = function(hit)
+    -- review tab: the file list, the picker and the diff body are its targets.
+    if store.selected and tab_of(store.selected) == REVIEW_TAB then
+      return review.on_click(hit)
+    end
     if hit.role ~= DRAG then
       return false
     end
@@ -995,6 +1091,11 @@ return {
 
   on_action = function(action)
     local id = store.selected
+    -- review tab: routed first, so the page keys can mean the review's pages.
+    local routed = review_action(id, action)
+    if routed ~= nil then
+      return routed
+    end
     if action == SCROLL_UP then
       return scroll_by(id, SCROLL_LINES)
     end
@@ -1031,3 +1132,15 @@ return {
     return true
   end,
 }
+
+-- review tab: the review's keys, settings and capability, declared on this pane
+-- because the review is a tab of it. Appended rather than written into the table
+-- above, so that table stays upstream's line for line.
+for _, binding in ipairs(review.KEYS) do
+  pane.keys[#pane.keys + 1] = binding
+end
+pane.commands[#pane.commands + 1] = { action = SELECT_REVIEW, desc = "show the review tab" }
+pane.settings = review.SETTINGS
+pane.capabilities = review.CAPABILITIES
+
+return pane

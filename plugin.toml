@@ -35,4 +35,4 @@ version = "v0.1.0"
 # them are v2 plugin-kernel.
 requires_thurbox = ">=2.0"
 
-pane = { source = "plugins/40_review.lua", path = "plugins/40_review.lua" }
+pane = { source = "plugins/20_agent.lua", path = "plugins/20_agent.lua" }

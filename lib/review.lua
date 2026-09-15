@@ -1,0 +1,2095 @@
+-- The Review tab of the agent pane: a session's worktree against its base branch.
+--
+-- `plugins/20_agent.lua` draws the tab strip and the frame, and hands keys,
+-- clicks and the render to this module only while the Review tab is showing.
+-- Everything inside that frame is decided here; nothing here knows about the
+-- terminal tabs beside it.
+--
+-- v1 shipped this natively — 1,844 lines of rendering and 2,610 of state — and
+-- it went with `src/ui`. This is the plugin that pays it back, and it is the
+-- first consumer of `thurbox.diffs` anywhere.
+--
+-- ── The shape, and why it is two shapes ─────────────────────────────────────
+--
+-- The pane is one plugin holding two very different things, which is design.md
+-- D2 and the reason this pane is expressible at all:
+--
+--   the changed-files list is a TREE — rows with identity, so they can be
+--     selected, clicked and decorated by a pane that never heard of this one;
+--   the diff body is a SURFACE — cells positioned by character measurement
+--     against the width the kernel resolved, so wrapping, horizontal scrolling
+--     and colouring are all decisions made here from `ctx.width`.
+--
+-- D3 says the body needs no fifth node kind, and it does not: `text`, `box` and
+-- `surface` draw everything below. If you find yourself wanting a fifth, you
+-- have the split wrong — that is the whole claim this pane is the test of.
+--
+-- ── The rule that outranks everything else ──────────────────────────────────
+--
+--   ONE LOGICAL DIFF ROW IS ONE SELECTABLE UNIT.
+--
+-- Wrapping expands VISUAL rows only. The cursor, the scroll anchor, the
+-- scrollbar and every hitbox are indices into the flat logical list that
+-- `lib/diff.lua` builds; `lib/rows.lua` is the only file that knows a logical
+-- row can occupy several lines. v1 held the same line across unified, wrapped
+-- and side-by-side layouts, and it is what makes a comment anchor mean
+-- something later.
+--
+-- ── What is missing, and why it is missing rather than faked ────────────────
+--
+-- Comments and review marks have storage in the kernel (`storage::review`,
+-- `review_comments` / `review_marks`, schema v38) that survived the deletion of
+-- v1's UI. None of it is published to Lua and there is no command to write one,
+-- so this pane CANNOT persist a comment. It says so, once, rather than keeping
+-- comments in `state` where they would look persistent and vanish on the next
+-- upgrade. `KERNEL-GAPS.md` at the repository root states the exact read and command
+-- that would close it.
+
+local theme = require("lib.theme")
+local widgets = require("lib.widgets")
+
+local diff = require("thurbox-code-review.lib.diff")
+local rows = require("thurbox-code-review.lib.rows")
+local export = require("thurbox-code-review.lib.export")
+local notes = require("thurbox-code-review.lib.notes")
+local textinput = require("lib.textinput")
+local syntax = require("thurbox-code-review.lib.syntax")
+local target = require("thurbox-code-review.lib.target")
+
+--- The plugin whose settings these are: the agent pane, which declares them on
+--- this module's behalf. Named once because the lookup and the write both need
+--- it.
+local NAME = "agent"
+
+--- Prefixed, because they sit beside the agent pane's own in `Ctrl+,` →
+--- Plugins and a bare `wrap` there would not say what it wraps.
+local SETTING_PREFIX = "review_"
+
+--- Columns the changed-files list asks for, and the width below which the pane
+--- stops offering it at all. Below `FILES_MIN_PANE` there is not room for a diff
+--- and a list of what is in it, and the diff is the thing you came for.
+local FILES_WIDTH_MAX, FILES_WIDTH_MIN, FILES_MIN_PANE = 34, 20, 70
+
+--- Columns a horizontal scroll step moves. v1's, so the muscle memory carries.
+local HSCROLL_STEP = 8
+
+--- Rows a page key moves. Logical rows, not visual ones — a page that moved by
+--- visual lines would move a different distance depending on how many lines
+--- happened to be wrapped, which is the rule above leaking out through a key.
+local PAGE = 10
+
+--- The rule between the changed-files list and the diff body.
+local DIVIDER = "│"
+
+-- ── reading the world ───────────────────────────────────────────────────────
+
+--- The session the list has selected, resolved against this frame's snapshot.
+---
+--- `store.selected` is the session list's own signal, and since the kernel fix
+--- of 2026-08-18 it is also what drives the diff request — so a pane that shows
+--- a diff and draws no terminal is now handed the thing it exists to show.
+local function selected()
+  local id = store.selected
+  if not id then
+    return nil
+  end
+  for _, session in ipairs(thurbox and thurbox.sessions or {}) do
+    if session.id == id then
+      return session
+    end
+  end
+  return nil
+end
+
+--- Sessions whose next ask should re-run rather than take the fresh answer.
+---
+--- Set by `r` and cleared by the render that consumed it, so a refresh is one
+--- ask and not a state the pane sits in — `refresh = true` on every frame would
+--- be a `git show` per frame, which is the exact thing the kernel's freshness
+--- rule exists to prevent.
+local refreshing = {}
+
+--- What the review is OF, for the session in force. `nil` is the kernel's own.
+local function target_of(id)
+  return target.of(state, id)
+end
+
+--- A state key that names the session AND what it is showing.
+---
+--- Where you are in a review is a property of the review, and switching from the
+--- branch to one commit inside it is a different review — carrying the cursor,
+--- the scroll and the folds across would land you on row 4,000 of a forty-row
+--- diff. The parse is keyed the same way, so flipping back to a target you have
+--- already read redraws it rather than re-reading it.
+---
+--- Notes and seen-marks are deliberately NOT keyed this way: a note is about a
+--- line of code and stays true whichever diff you found it in, which is also how
+--- v1 keys its comments.
+local function scope(id)
+  return target.scope(id, target_of(id))
+end
+
+--- What is known about that session's changes, or nil for "never asked".
+---
+--- The kernel's answer when the kernel computes this target — which is the
+--- resting case, needs no capability, and is byte for byte what this pane drew
+--- before there was a picker. Otherwise git is run for it, and `lib/target.lua`
+--- hands back the same shape so that nothing below here can tell the difference.
+local function published(session)
+  if not session then
+    return nil
+  end
+  local kernel = (thurbox and thurbox.diffs or {})[session.id]
+  return target.entry(session, target_of(session.id), kernel, refreshing[session.id])
+end
+
+-- ── the parse, and its epoch ────────────────────────────────────────────────
+--
+-- A diff's content can only change by the store dropping its entry and
+-- recomputing, which means a frame that is not `ready` must pass between two
+-- different bodies. Counting those transitions identifies a body exactly, at one
+-- comparison per frame — where hashing 100k lines every frame to notice a change
+-- that almost never happens would cost more than the parse it protects.
+
+local epochs = {}
+local seen_state = {}
+
+--- Advance the epoch when a session's diff leaves the `ready` state, and return
+--- the epoch in force.
+--- Keyed by SCOPE, not by session: switching from the branch to a commit swaps
+--- the body under the pane without any state passing through, so an epoch that
+--- counted only the kernel's transitions would hand the new body the old parse.
+local function epoch_of(id, phase)
+  local key = scope(id)
+  local before = seen_state[key]
+  if before == "ready" and phase ~= "ready" then
+    epochs[key] = (epochs[key] or 0) + 1
+  end
+  seen_state[key] = phase
+  return epochs[key] or 0
+end
+
+--- The epoch in force, for the handlers, which do not advance it.
+local function epoch_now(id)
+  return epochs[scope(id)] or 0
+end
+
+-- ── per-session cursor state ────────────────────────────────────────────────
+--
+-- Keyed per session for the reason the terminal pane keys its scrollback per
+-- session: where you are in a review is a property of the review, not of the
+-- pane looking at it. Shared, selecting another session would carry your cursor
+-- onto a diff it means nothing in.
+--
+-- `state` hands back a COPY on every read, so every one of these writes the
+-- whole value back. Mutating what a read returned changes nothing at all, which
+-- is the first trap PLUGINS.md names.
+
+local function cursor_of(id)
+  return state["sel:" .. scope(id)] or 1
+end
+
+local function set_cursor(id, at)
+  state["sel:" .. scope(id)] = at > 1 and at or nil
+end
+
+local function top_of(id)
+  return state["top:" .. scope(id)] or 1
+end
+
+local function set_top(id, at)
+  state["top:" .. scope(id)] = at > 1 and at or nil
+end
+
+local function hscroll_of(id)
+  return state["hscroll:" .. scope(id)] or 0
+end
+
+local function set_hscroll(id, at)
+  state["hscroll:" .. scope(id)] = at > 0 and at or nil
+end
+
+-- ── composing a note ────────────────────────────────────────────────────────
+--
+-- One field, held in `state` so a reload (F10) does not lose what you have
+-- typed — which is the reason `lib.textinput` keeps a field as a plain table.
+-- `editing` carries the id when an existing note is being changed rather than a
+-- new one written.
+
+local function compose_of(id)
+  return state["compose:" .. id]
+end
+
+local function set_compose(id, value)
+  state["compose:" .. id] = value
+end
+
+local function composing(id)
+  return id ~= nil and compose_of(id) ~= nil
+end
+
+-- ── the target picker ───────────────────────────────────────────────────────
+--
+-- Open state IS the selected index: a picker with nothing selected is not a
+-- state this has, and two keys that have to agree about whether it is open is
+-- one more thing to get wrong.
+--
+-- Per session and NOT per scope, unlike the cursor: the picker is how you change
+-- the scope, so keying it by the scope would reset it on the frame it did its
+-- job.
+
+local function picker_at(id)
+  return state["picker:" .. id]
+end
+
+local function set_picker(id, at)
+  state["picker:" .. id] = at
+end
+
+local function picking(id)
+  return id ~= nil and picker_at(id) ~= nil
+end
+
+--- Where the changed-files list is pointing, when that is not simply "wherever
+--- the body is".
+---
+--- `nil` means FOLLOW THE BODY, which is what it does almost all the time — the
+--- list is a navigation aid, and an aid that drifts from the thing it is aiding
+--- is a second thing to keep track of. It is set only when the list is driven
+--- somewhere the body cannot go, which since `962aef7` is a real place: the
+--- kernel lists every changed file and caps only the patch, so on a large diff
+--- there are hundreds of files named in the list with no rows behind them.
+---
+--- Any movement of the BODY clears it, so the two can never silently disagree:
+--- either you are driving the list, or the list is following you.
+local function list_at(id)
+  return state["list:" .. scope(id)]
+end
+
+local function set_list_at(id, path)
+  state["list:" .. scope(id)] = path
+end
+
+--- Files marked reviewed, as `path -> true`.
+---
+--- TRANSIENT, and said to be transient in the footer. `review_marks` exists in
+--- the kernel's storage and is not published, so this is a session-lifetime
+--- convenience and not the persistence v1 had. Keeping it in `state` rather than
+--- pretending otherwise is the honest half; the dishonest half would be leaving
+--- the user to discover it after a restart.
+local function marks_of(id)
+  return state["marks:" .. id] or {}
+end
+
+local function toggle_mark(id, path)
+  local held = marks_of(id)
+  held[path] = (not held[path]) or nil
+  state["marks:" .. id] = held
+end
+
+--- Files whose fold state is flipped from what their mark implies.
+---
+--- v1's `fold_override`, and v1's rule: a file is folded when
+--- `reviewed XOR override`. Marking a file seen folds it, because the point of
+--- marking it is that you are done with it — and the override lets you peek into
+--- a file you have marked, or fold one you have not, without either changing the
+--- mark. Two ideas, two sets, one XOR.
+local function folds_of(id)
+  return state["fold:" .. id] or {}
+end
+
+local function toggle_fold(id, path)
+  local held = folds_of(id)
+  held[path] = (not held[path]) or nil
+  state["fold:" .. id] = held
+end
+
+--- Is this file collapsed to its header?
+local function folded(marks, overrides, path)
+  return (marks[path] == true) ~= (overrides[path] == true)
+end
+
+--- What the fold set and the layout amount to, for the row cache.
+---
+--- A string rather than a table so a comparison is one operation. Built from the
+--- two sets rather than from the resulting fold state, because that is what
+--- changes when a key is pressed.
+---
+--- `notes` is in it because the fold filter runs over the list the NOTES were
+--- interleaved into. Leaving it out cached a list built before a note existed
+--- and kept serving it: the note saved, exported and was invisible, and only on
+--- a diff where something was folded — so it looked like folding, and every test
+--- without a mark in it passed. A cache key has to name everything the cached
+--- value was derived from, not everything the cache is about.
+local function fold_signature(marks, overrides, side, revision)
+  local parts = { (side and "side" or "unified") .. ":n" .. tostring(revision) }
+  for path in pairs(marks) do
+    parts[#parts + 1] = "m" .. path
+  end
+  for path in pairs(overrides) do
+    parts[#parts + 1] = "o" .. path
+  end
+  table.sort(parts)
+  return table.concat(parts, "\1")
+end
+
+-- ── the view toggles ────────────────────────────────────────────────────────
+--
+-- ONE source of truth: the declared setting, read from the registry and written
+-- with `command("set", …)`.
+--
+-- The first version kept an override in `state` beside the setting, on the
+-- reasoning that "the setting is what the pane starts as, the key is what you
+-- did to it since". Both persist, so that bought nothing and cost the property
+-- that matters: `Ctrl+,` showed a value the key had silently overridden, and
+-- resetting it there did nothing. A knob with two homes is a knob that lies in
+-- one of them.
+--
+-- `command("set", { text = "<plugin>.<id>", flag = … })` is the write. It takes
+-- effect a frame later, like every command, which nobody can see.
+
+local function toggle_value(id, declared)
+  local registry = (thurbox and thurbox.registry and thurbox.registry.settings) or {}
+  for _, entry in ipairs(registry) do
+    if entry.plugin == NAME and entry.id == SETTING_PREFIX .. id then
+      if entry.value ~= nil then
+        return entry.value == true
+      end
+      return declared
+    end
+  end
+  return declared
+end
+
+--- Flip a declared setting, and say what it will become.
+local function set_toggle(id, declared)
+  local now = not toggle_value(id, declared)
+  command("set", { text = NAME .. "." .. SETTING_PREFIX .. id, flag = now })
+  return now
+end
+
+local function wrapping()
+  return toggle_value("wrap", false)
+end
+
+local function files_shown()
+  return toggle_value("files", true)
+end
+
+--- Colour the code as well as the change.
+---
+--- On by default, as v1 has it. Off is a setting rather than a key: the keys are
+--- crowded and this is a preference, not a thing you flip while reading.
+local function highlighting()
+  return toggle_value("syntax", true)
+end
+
+--- Unified, or old-and-new side by side. v1's `v`.
+local function side_by_side()
+  return toggle_value("side", false)
+end
+
+--- The rows in force: two flat lists over one parse, and which one is on screen
+--- decides what a selectable unit IS. See `lib/diff.lua`'s pairing section.
+local function rows_in_force(parse, id)
+  local base = side_by_side() and diff.paired(parse) or parse.rows
+  if not id then
+    return base
+  end
+  -- Notes first, folding second: a note belongs to a file, so folding that file
+  -- takes its notes with it. The other order would leave a note floating under a
+  -- collapsed header with nothing to explain it.
+  local written = notes.all(state, id)
+  if #written > 0 then
+    base = notes.interleave(
+      parse,
+      base,
+      written,
+      (side_by_side() and "side" or "unified")
+        .. ":"
+        .. notes.revision(state, id)
+        .. ":"
+        .. parse.at
+    )
+  end
+  local marks, overrides = marks_of(id), folds_of(id)
+  if next(marks) == nil and next(overrides) == nil then
+    -- Nothing folded: hand back the base list rather than a copy of it. This is
+    -- the usual case and it should cost nothing.
+    return base
+  end
+  return diff.unfolded(
+    parse,
+    base,
+    function(path)
+      return folded(marks, overrides, path)
+    end,
+    fold_signature(marks, overrides, side_by_side(), notes.revision(state, id)) .. ":" .. parse.at
+  )
+end
+
+-- ── find-in-diff ────────────────────────────────────────────────────────────
+--
+-- Per session, like the cursor and for the same reason. Held globally, a query
+-- typed against one session followed you onto the next one and sat there saying
+-- "no matches" about a diff you had never searched.
+
+--- The session a key is acting on. `on_key` has no argument to derive it from,
+--- and every find key needs it, so it is resolved the same way `render` does.
+local function current_id()
+  local session = selected()
+  return session and session.id or nil
+end
+
+local function query(id)
+  id = id or current_id()
+  local text = id and state["query:" .. id]
+  if text == nil or text == "" then
+    return nil
+  end
+  return text
+end
+
+local function set_query(id, text)
+  state["query:" .. id] = (text ~= nil and text ~= "") and text or nil
+end
+
+local function find_open(id)
+  return id ~= nil and state["find:" .. id] == true
+end
+
+local function finding(id)
+  id = id or current_id()
+  return id ~= nil and state["typing:" .. id] == true
+end
+
+local function close_find(id)
+  state["find:" .. id] = nil
+  state["typing:" .. id] = nil
+  state["query:" .. id] = nil
+end
+
+--- Logical rows whose text contains the query, in row order.
+---
+--- INCREMENTAL, for the reason the parse is. A full scan of a capped diff was
+--- measured at 2.3M instructions and 32 ms — fine once, and paid on every frame
+--- of the parse if the list were rebuilt whenever `rows` grew. Rows are only
+--- ever appended, so the scan resumes from where it stopped and the whole parse
+--- costs one pass however many frames it took.
+---
+--- Module-local for the reason the parse cache is: `state` and `store` hand back
+--- a copy on every read, and this list can hold thousands of entries.
+local match_cache = {}
+
+local function matches(id, parse, in_force, needle)
+  if not needle then
+    return {}
+  end
+  -- Keyed on the LAYOUT as well: the two lists index differently, so a match
+  -- list built against one is a set of wrong row numbers in the other.
+  local layout = side_by_side() and "side" or "unified"
+  local held = match_cache[scope(id)]
+  if
+    not (held and held.needle == needle and held.epoch == epoch_now(id) and held.layout == layout)
+  then
+    held = { needle = needle, epoch = epoch_now(id), layout = layout, scanned = 0, list = {} }
+    match_cache[scope(id)] = held
+  end
+  local lowered = string.lower(needle)
+  local list = held.list
+  for at = held.scanned + 1, #in_force do
+    if string.find(string.lower(rows.text_of(in_force[at], parse.rows)), lowered, 1, true) then
+      list[#list + 1] = at
+    end
+  end
+  held.scanned = #in_force
+  return list
+end
+
+-- ── chrome ──────────────────────────────────────────────────────────────────
+
+--- The right-aligned title, fitted against the tab strip on the same border.
+---
+--- The title is runs — the range, then the counts — and it loses from the
+--- right: the counts go before the range does, and the whole title before it
+--- would run into a chip. The strip is the way between tabs; the title is only
+--- a report.
+local function fit_title(runs, width, reserved)
+  local available = math.max(0, width - 2 - reserved - 1)
+  local function measure()
+    local used = 0
+    for _, run in ipairs(runs) do
+      used = used + widgets.len(run.text)
+    end
+    return used
+  end
+  while measure() > available and #runs > 3 do
+    table.remove(runs, #runs - 1)
+  end
+  if measure() > available then
+    return {}
+  end
+  return runs
+end
+
+--- Integer divide, rounding to nearest — ratatui's `rounding_divide`, so the
+--- thumb lands where every other scrollbar in the interface puts it.
+local function rounding_divide(numerator, denominator)
+  return math.floor((numerator + math.floor(denominator / 2)) / denominator)
+end
+
+--- One run per inner row of a scrollbar over LOGICAL rows.
+---
+--- Over logical rows on purpose, and this is the rule showing up in the chrome:
+--- a thumb scaled to visual lines would change size when you pressed `w`, as
+--- though the diff had grown. It tracks the cursor rather than the scroll
+--- offset, because the cursor reaches the last row and the offset never can.
+local function scrollbar(height, total, position)
+  local track = height - 2
+  if total <= 0 or track <= 0 or total <= height then
+    return nil
+  end
+  local highest = math.max(0, total - 1)
+  local at = math.max(0, math.min(position, highest))
+  local span = highest + height
+  local thumb = math.max(1, math.min(rounding_divide(height * track, span), track))
+  local start = math.max(0, math.min(rounding_divide(at * track, span), track - thumb))
+
+  local rail = { text = "║", style = { fg = theme.muted } }
+  local grip = { text = "█", style = { fg = theme.accent } }
+  local out = { { text = "▲" } }
+  for _ = 1, start do
+    out[#out + 1] = rail
+  end
+  for _ = 1, thumb do
+    out[#out + 1] = grip
+  end
+  for _ = 1, track - start - thumb do
+    out[#out + 1] = rail
+  end
+  out[#out + 1] = { text = "▼" }
+  return out
+end
+
+-- ── bodies for the states that are not a diff ───────────────────────────────
+
+--- A centred stack of lines: what every not-yet-a-diff state looks like.
+local function centred(lines)
+  local children = { { type = "text", fill = 1, text = "" } }
+  for _, line in ipairs(lines) do
+    children[#children + 1] = { type = "text", len = 1, align = "center", text = { line } }
+  end
+  children[#children + 1] = { type = "text", fill = 1, text = "" }
+  return { type = "box", axis = "vertical", fill = 1, children = children }
+end
+
+--- The braille spinner, so "pending" is visibly alive.
+---
+--- This is the difference the kernel asks for at its publish site and the spec
+--- asks for in a scenario: a slow diff must not read as a clean worktree. It is
+--- not enough that the words differ — one of these MOVES and the other is a
+--- still line of text, which is what the eye actually reads.
+local function spinner(elapsed)
+  local frames = theme.spinner
+  return frames[(math.floor((elapsed or 0) * 10) % #frames) + 1]
+end
+
+-- ── the changed-files list: a TREE ──────────────────────────────────────────
+--
+-- Rows with identity, which is what a tree is for. Each carries `id` and
+-- `role = "row"`, so a click reaches `on_click` and a decorator can match them
+-- — neither of which the body beside it can offer, and that trade is exactly
+-- what D2 accepts.
+
+--- Group the files into directory headers and leaves, preserving each file's
+--- index so a click still names the file it drew. v1's `build_file_tree`.
+---
+--- Sorted BY DIRECTORY, then by name — not by whole path, which is the mistake
+--- the first run caught. git emits files in its own order, so a header written
+--- on every change of directory printed `src/` twice; sorting by the full path
+--- did not fix it, because `src/deep/nested/two.rs` sorts BETWEEN
+--- `src/added.txt` and `src/one.lua` and splits `src/` in half again. Grouping
+--- means keying on the directory itself.
+---
+--- The body keeps git's order — this is a navigation aid, not a second copy of
+--- the diff — so each leaf carries the path it had there.
+---
+--- This is also what defines the order `tab` walks. The keys have to agree with
+--- what is drawn: a next-file that followed git's order while the list showed
+--- directory order would move the highlight somewhere the eye did not expect,
+--- and only on repositories where the two differ.
+local function file_tree(files)
+  local order = {}
+  for _, file in ipairs(files) do
+    local dir, name = string.match(file.path, "^(.*)/([^/]*)$")
+    order[#order + 1] = { file = file, dir = dir or "", name = name or file.path }
+  end
+  table.sort(order, function(a, b)
+    if a.dir ~= b.dir then
+      return a.dir < b.dir
+    end
+    return a.name < b.name
+  end)
+
+  local out, previous = {}, nil
+  for _, entry in ipairs(order) do
+    if entry.dir ~= previous then
+      if entry.dir ~= "" then
+        out[#out + 1] = { dir = entry.dir }
+      end
+      previous = entry.dir
+    end
+    out[#out + 1] = { file = entry.file, depth = entry.dir ~= "" and 1 or 0 }
+  end
+  return out
+end
+
+--- The changed-files list.
+---
+--- Built from the KERNEL's `files`, not from the incremental parse's. Two
+--- reasons, and the first is user-visible: the kernel's list is complete on the
+--- frame the diff arrives, so on a large diff the list is whole while the body
+--- is still being read — which is the half you navigate by. The second is that
+--- `status` and `old_path` are published there now, so nothing has to be
+--- recovered from the body to draw a glyph and a rename arrow.
+---
+--- Both lists come from one `parse_unified_diff` over the same bytes, so index
+--- `n` means the same file in each. That is load-bearing: a leaf carries the
+--- index the BODY rows use, and a click on a file the parse has not produced
+--- rows for yet is deferred rather than dropped (see `wanted`).
+--- The paths of the tree's leaves, in the order they are drawn.
+local function listed_paths(files)
+  local out = {}
+  for _, entry in ipairs(file_tree(files)) do
+    if entry.file then
+      out[#out + 1] = entry.file.path
+    end
+  end
+  return out
+end
+
+--- Step the list cursor from `path` by `delta`, in drawn order.
+local function step_listed(files, path, delta)
+  local order = listed_paths(files)
+  if #order == 0 then
+    return nil
+  end
+  local here = nil
+  for index, candidate in ipairs(order) do
+    if candidate == path then
+      here = index
+    end
+  end
+  -- Nowhere yet: the first step lands on an end rather than nothing.
+  if not here then
+    return delta > 0 and order[1] or order[#order]
+  end
+  local to = here + delta
+  if to < 1 or to > #order then
+    return nil
+  end
+  return order[to]
+end
+
+local function files_pane(files, opts)
+  local width, height = opts.width, opts.height
+  local tree = file_tree(files)
+  local here = nil
+  for at, entry in ipairs(tree) do
+    if entry.file and entry.file.path == opts.current then
+      here = at
+    end
+  end
+  local first, last = widgets.window(#tree, height, here or 1)
+
+  local children = {}
+  for at = first, last do
+    local entry = tree[at]
+    if entry.dir then
+      children[#children + 1] = {
+        type = "text",
+        len = 1,
+        text = {
+          {
+            {
+              text = rows.pad(widgets.middle_truncate(entry.dir .. "/", width), width),
+              style = { fg = theme.muted, bold = true },
+            },
+          },
+        },
+      }
+    else
+      local file = entry.file
+      local current = file.path == opts.current
+      -- Is this file in the BODY, or only in the list? The kernel lists every
+      -- changed file and caps only the patch, so on a large diff there are rows
+      -- here with nothing behind them. Unknown until the parse finishes, and
+      -- clickable meanwhile — a click is deferred, not dropped.
+      local in_body = opts.covered[file.path] == true
+      local absent = opts.parsed and not in_body
+      local mark = opts.reviewed[file.path] and "✓" or " "
+      local counts = " +" .. file.added .. " -" .. file.removed
+      local indent = string.rep(" ", entry.depth)
+      local name = string.match(file.path, "([^/]*)$") or file.path
+      local room = width - widgets.len(indent) - 3 - widgets.len(counts)
+      name = widgets.truncate(name, math.max(1, room))
+      local head = indent .. mark .. " " .. file.status .. " "
+      local text = rows.pad(head .. name .. counts, width)
+      local base
+      if current then
+        base = { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+      elseif absent then
+        -- Muted, because there is nothing to go to. The banner says how many.
+        base = { fg = theme.muted }
+      else
+        base = { fg = theme.text }
+      end
+      local line
+      if current then
+        line = { { text = text, style = base } }
+      else
+        local upto = widgets.len(head)
+        line = {
+          { text = rows.slice(text, 1, upto - 2), style = base },
+          {
+            text = rows.slice(text, upto - 1, upto),
+            style = { fg = rows.status_fg(file.status) },
+          },
+          { text = rows.slice(text, upto + 1, upto + widgets.len(name)), style = base },
+          {
+            text = rows.slice(text, upto + widgets.len(name) + 1, width),
+            style = { fg = theme.muted },
+          },
+        }
+      end
+      children[#children + 1] = {
+        type = "text",
+        len = 1,
+        -- Identity: what makes this a tree rather than more cells.
+        --
+        -- By PATH, because the list and the body are two different lists now —
+        -- the kernel builds the first from `--numstat`, and this pane builds the
+        -- second from the capped body. An index into one means nothing in the
+        -- other, and on a capped diff they differ by hundreds of files.
+        --
+        -- EVERY row that could have a body is a target, including files the
+        -- parse has not reached yet. The first version made an unreached row
+        -- inert, on the reasoning that there was no row to jump to — true, and
+        -- the wrong answer: the list is complete precisely so it can be
+        -- navigated while the body is still being read. A click on one is
+        -- remembered and honoured the moment the parse reaches it (`wanted`).
+        --
+        -- A file the finished parse never produced is the one case where the row
+        -- really has nowhere to go, and it is drawn muted rather than left to
+        -- look clickable.
+        id = (not absent) and ("file:" .. file.path) or nil,
+        role = (not absent) and "row" or nil,
+        text = { line },
+      }
+    end
+  end
+  children[#children + 1] = { type = "text", fill = 1, text = "" }
+  return { type = "box", axis = "vertical", len = width, children = children }
+end
+
+-- ── the find bar ────────────────────────────────────────────────────────────
+
+local function find_bar(id, width, hits, at)
+  local needle = query(id) or ""
+  local place = ""
+  if #hits > 0 then
+    local ordinal = 0
+    for index, row in ipairs(hits) do
+      if row <= at then
+        ordinal = index
+      end
+    end
+    place = "  " .. ordinal .. "/" .. #hits
+  elseif needle ~= "" then
+    place = "  no matches"
+  end
+  local caret = finding(id) and "▏" or ""
+  local text = "/" .. needle .. caret .. place
+  return {
+    type = "text",
+    len = 1,
+    text = {
+      {
+        {
+          text = rows.pad(text, width),
+          style = { fg = theme.text, bg = theme.role("search_bar") },
+        },
+      },
+    },
+  }
+end
+
+--- What the cap left out, as specifically as it can now be said.
+---
+--- In FILES first, because that is the question a reviewer scrolling the list is
+--- asking, and bytes second. Both halves arrived separately: `raw_bytes` gave the
+--- size before the cut, and then the kernel began listing files from `--numstat`
+--- independently of the body — so the list is whole while the patch is capped,
+--- and the difference between the two counts is exactly what is missing.
+---
+--- The file count needs a finished parse (it is a count of what the BODY holds),
+--- so until then this says bytes alone rather than a number that would keep
+--- changing.
+-- ── the target picker's body ────────────────────────────────────────────────
+
+--- What each choice reads as, and what marks the one in force.
+---
+--- The RANGE is spelled out rather than only named, for both the branch and the
+--- working entries, because "all branch changes" is a phrase and `main..HEAD` is
+--- a fact — and the fact is the thing a reviewer checks before believing the
+--- diff. v1 puts both in its label for the same reason.
+local function choice_line(choice, session, width, current, commits)
+  local mark = target.same(session, choice.target, current) and "●" or " "
+  local label = target.label(choice.target, session, commits)
+  local note = ""
+  if choice.commit and choice.commit.merge then
+    -- `git show` draws nothing for a merge without `-m`, so a picker that
+    -- offered one silently would offer an empty pane. v1 has the same blind
+    -- spot; saying so costs one word.
+    note = "  merge"
+  elseif choice.needs_trust then
+    note = "  needs trust"
+  elseif target.kernel_serves(session, choice.target) then
+    note = "  ready"
+  end
+  local room = width - 3 - widgets.len(note)
+  return mark .. " " .. widgets.truncate(label, math.max(1, room)), note
+end
+
+--- The picker, drawn where the diff would be. v1 replaces the body too, and the
+--- reason holds here: the body is where you are already looking, and a review
+--- has no room for a third column.
+local function target_picker(session, opts)
+  local width, height = opts.width, opts.height
+  local children = {}
+  local function line(runs)
+    children[#children + 1] = { type = "text", len = 1, text = { runs } }
+  end
+  local function say(text, style)
+    line({ { text = rows.pad(" " .. text, width), style = style } })
+  end
+
+  say("Review what?", { fg = theme.secondary, bold = true })
+
+  local choices = opts.choices
+  local room = math.max(1, height - 3)
+  local first, last = widgets.window(#choices, room, opts.at)
+  for index = first, last do
+    local choice = choices[index]
+    local text, note = choice_line(choice, session, width - 1, opts.current, opts.commits.list)
+    local here = index == opts.at
+    local base
+    if here then
+      base = { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+    elseif choice.needs_trust then
+      base = { fg = theme.muted }
+    else
+      base = { fg = theme.text }
+    end
+    local body = rows.pad(" " .. text, width - widgets.len(note))
+    children[#children + 1] = {
+      type = "text",
+      len = 1,
+      -- Identity, so a click picks the target under it — the same affordance the
+      -- changed-files list has, and for the same reason: a list of choices you
+      -- can only reach with the keyboard is half a list.
+      id = "target:" .. target.key(choice.target),
+      role = "row",
+      text = {
+        {
+          { text = body, style = base },
+          { text = note, style = here and base or { fg = theme.hint } },
+        },
+      },
+    }
+  end
+
+  -- What the commit half of the list is doing, said where the gap is rather
+  -- than left as an absence — an empty picker and a picker still asking git look
+  -- identical otherwise.
+  local commits = opts.commits
+  if commits.state == "pending" then
+    say(spinner(opts.elapsed) .. " listing commits…", { fg = theme.muted })
+  elseif commits.state == "denied" then
+    say("commits need trust: settings → Interface → t", { fg = theme.hint })
+  elseif commits.state == "failed" then
+    say(commits.error or "could not list commits", { fg = theme.bad })
+  elseif commits.truncated then
+    say("more commits than fit — the newest " .. target.MAX_COMMITS, { fg = theme.hint })
+  end
+
+  children[#children + 1] = { type = "text", fill = 1, text = "" }
+  return { type = "box", axis = "vertical", fill = 1, children = children }
+end
+
+--- Why the body is short, in the numbers that actually applied.
+---
+--- Two sources, two caps: the kernel cuts a diff at 4 MiB and a `run` cuts its
+--- stdout at 256 KiB, so a fixed "4.0 MB" here would be a lie for every target
+--- the picker added. The cap is carried on the entry and printed from there, and
+--- the total is printed only when there IS one — a cut capture cannot say how
+--- big the whole was, and inventing a number is worse than omitting one.
+local function untracked_short(entry)
+  -- Two spellings of one fact: `untracked_cut` from this pane's own walk, and
+  -- `untracked_omitted` from the kernel's, which folds untracked files into a
+  -- working diff too now. The kernel publishes its count always, zero included,
+  -- and zero is true in Lua — so it is compared, never tested.
+  local omitted = entry.untracked_omitted
+  return entry.untracked_cut or (type(omitted) == "number" and omitted > 0 and omitted) or nil
+end
+
+local function truncation_notice(entry, parse)
+  -- A short LIST is not a capped patch, and it is said first because it is the
+  -- one that means "a file you changed is not named anywhere on this screen".
+  local short = untracked_short(entry)
+  if short then
+    return string.format(
+      "%d more untracked files than this can show — commit or ignore some",
+      short
+    )
+  end
+  local shown = entry.cap or (4 * 1024 * 1024)
+  local whole = entry.raw_bytes
+  local size = ""
+  if type(whole) == "number" and whole > shown then
+    size = string.format(" (%.1f of %.1f MB)", shown / (1024 * 1024), whole / (1024 * 1024))
+  elseif shown < 1024 * 1024 then
+    size = string.format(" (the first %d KB git printed)", shown / 1024)
+  end
+  local listed = #(entry.files or {})
+  if parse.done and listed > #parse.files then
+    return string.format(
+      "the patch is capped: %d of %d changed files are shown%s",
+      #parse.files,
+      listed,
+      size
+    )
+  end
+  return "the patch is capped — some changes are not shown" .. size
+end
+
+--- The compose strip: what you are noting, and how long it lasts.
+---
+--- The lifetime is said HERE, where somebody is about to type, rather than only
+--- in a README they are not reading. `state` survives a reload and not a
+--- restart, so a note is for this sitting — which is the sitting it is for,
+--- since the point of writing one is to send it.
+local function compose_strip(width, held)
+  local anchor = held.anchor or {}
+  local where
+  if anchor.kind == "review" then
+    where = "the review"
+  elseif anchor.kind == "file" then
+    where = anchor.path or "?"
+  else
+    where = (anchor.path or "?") .. ":" .. tostring(anchor.line or "?")
+  end
+  local head = (held.editing and " editing note on " or " note on ")
+  local tail = "  ⇥ type · ↵ save · esc cancel · notes are lost when thurbox quits "
+  local pad_to = math.max(0, width - widgets.len(head) - widgets.len(where))
+  return {
+    type = "text",
+    len = 1,
+    text = {
+      {
+        { text = head, style = { fg = theme.muted } },
+        { text = where, style = { fg = theme.branch } },
+        { text = rows.pad(tail, pad_to), style = { fg = theme.hint } },
+      },
+    },
+  }
+end
+
+-- ── the footer hint strip ───────────────────────────────────────────────────
+
+local function hint(label, keys)
+  return {
+    { text = " " .. keys, style = { fg = theme.hint } },
+    { text = " " .. label, style = { fg = theme.muted } },
+  }
+end
+
+--- The hint strip along the bottom border.
+---
+--- Built as a list of whole hints and trimmed a whole hint at a time. Trimming
+--- runs instead dropped the label and kept the key, so a 60-column pane advertised
+--- a bare `e` — a chord with nothing to say what it does, which is worse than no
+--- chord at all.
+---
+--- `sendable` is whether any note has been written. Until one has, `send` has
+--- nothing to send and is the first hint to go; once one has, it is the thing to
+--- do next and sits beside `note`, because the pane beside the session list is
+--- ~90 columns and a strip trimmed from the right lost it on exactly the screen
+--- where a note had just been written.
+local function footer(width, ready, sendable)
+  local hints = {}
+  local function put(label, keys)
+    hints[#hints + 1] = hint(label, keys)
+  end
+  if not ready then
+    put("refresh", "r")
+    put("back", "esc")
+  else
+    put("move", "j/k")
+    put("file", "⇥")
+    put("hunk", "[ ]")
+    put("find", "/")
+    put("note", "c")
+    if sendable then
+      put("send", "e")
+    end
+    put("fold", "↵")
+    -- Every key that changes what the BODY looks like belongs here. `w` was
+    -- dropped from this list when `v` was added — replaced rather than added to
+    -- — and the result is the failure this pane's own README warns about: the
+    -- key still worked, `plugin check` still passed, F1 still listed it, and
+    -- there was nothing on screen to say wrapping existed. A capability nobody
+    -- can find is not a capability.
+    put("wrap", "w")
+    put("split", "v")
+    put("seen", "m")
+    put("target", "t")
+    put("refresh", "r")
+    if not sendable then
+      put("send", "e")
+    end
+  end
+  local function measure()
+    local used = 0
+    for _, one in ipairs(hints) do
+      for _, run in ipairs(one) do
+        used = used + widgets.len(run.text)
+      end
+    end
+    return used
+  end
+  -- Drop the least important hint — the rightmost — until the strip fits.
+  while measure() > width - 2 and #hints > 0 do
+    table.remove(hints)
+  end
+  local out = {}
+  for _, one in ipairs(hints) do
+    for _, run in ipairs(one) do
+      out[#out + 1] = run
+    end
+  end
+  return out
+end
+
+-- ── navigation, all of it over LOGICAL rows ─────────────────────────────────
+
+local HUNK_KINDS = { hunk = true, file = true }
+
+--- Move the BODY cursor to `at`, keeping it on a selectable row and in range.
+---
+--- Clearing the list override here rather than at each call site is deliberate:
+--- every way the body moves goes through this function, so "the list follows the
+--- body unless you drove it" holds by construction instead of by remembering.
+local function move_to(id, in_force, at)
+  set_list_at(id, nil)
+  local count = #in_force
+  if count == 0 then
+    return
+  end
+  at = math.max(1, math.min(at, count))
+  -- Step past an unselectable row in the direction of travel, then back the
+  -- other way if that ran off the end.
+  local from = cursor_of(id)
+  local step = at >= from and 1 or -1
+  local walk = at
+  while walk >= 1 and walk <= count and not diff.selectable(in_force[walk]) do
+    walk = walk + step
+  end
+  if walk < 1 or walk > count then
+    walk = at
+    while walk >= 1 and walk <= count and not diff.selectable(in_force[walk]) do
+      walk = walk - step
+    end
+  end
+  if walk >= 1 and walk <= count then
+    set_cursor(id, walk)
+  end
+end
+
+--- A file the user asked for that the parse has not produced rows for yet.
+---
+--- Module-local rather than in `state` for the reason the parse cache is: this
+--- is a fact about a parse in progress, not about the review, and it is
+--- meaningless once the parse finishes. Keyed per session because everything
+--- else here is.
+local wanted = {}
+
+--- Honour a deferred jump once its file has rows.
+---
+--- Called from `render`, which is where the parse advances — so the frame that
+--- reaches the file is the frame that lands on it. Writing `state` from a render
+--- is unusual and deliberate: the alternative is a click that does nothing until
+--- the user presses another key, which is a click that looks broken.
+--- Idempotent, so a second render in the same frame changes nothing.
+local function settle_jump(id, parse, in_force, move)
+  local path = wanted[scope(id)]
+  if not path then
+    return
+  end
+  local row = diff.file_row(in_force, path)
+  if row then
+    wanted[scope(id)] = nil
+    move(row)
+  elseif parse.done then
+    -- The parse finished without ever producing that file: its patch was past
+    -- the cut. Forget it rather than waiting forever — the row is drawn muted
+    -- from here on, so the answer is on screen rather than only in this table.
+    wanted[scope(id)] = nil
+  end
+end
+
+--- What the body's visual lines mapped to, from the frame just drawn.
+---
+--- A surface carries no per-line identity — that is the trade D2 accepts — so a
+--- click on it arrives as a coordinate, and turning a coordinate back into a
+--- logical row is the plugin's job. It can do it because it OWNS the geometry:
+--- it decided which rows went where, and this is that decision written down.
+---
+--- Which is the answer to whether a dense pane needs a fifth node kind for
+--- clickable body lines. It does not: `surface` takes an `id` like any node, the
+--- paint walk records the rect, and `on_click` hands back `x`/`y` inside it.
+local last_body_map = {}
+
+--- The pane's own height for the body, which `on_action` needs and only
+--- `render` knows. Recorded from the last frame rather than recomputed, which is
+--- the documented way round: a value derived while drawing is invisible to a key
+--- unless the drawing wrote it down.
+local last_body_height = {}
+
+local function page(id, in_force, direction)
+  local height = last_body_height[id] or PAGE
+  move_to(id, in_force, cursor_of(id) + direction * math.max(1, height - 1))
+end
+
+-- ── the module the agent pane calls ─────────────────────────────────────────
+
+local review = {}
+
+--- ONE capability, declared by the agent pane on this module's behalf, and the
+--- review works without it.
+---
+--- The kernel computes exactly one of v1's three review targets — the branch
+--- when a session has a base, the working changes when it does not — so the
+--- other two, and every per-commit target, have to be asked for. `run` is the
+--- only door to git, and it is off until you grant it.
+---
+--- Untrusted, nothing here degrades except the picker: the kernel's diff draws
+--- exactly as it does trusted, and `t` opens a list that names the other choices
+--- and says they need trust rather than hiding them. Nothing is run until you
+--- open that list or pick something in it.
+review.CAPABILITIES = { "run" }
+
+review.SETTINGS = {
+  {
+    id = SETTING_PREFIX .. "side",
+    desc = "Review: start with the diff side by side rather than unified",
+    default = false,
+  },
+  {
+    id = SETTING_PREFIX .. "syntax",
+    desc = "Review: colour the code, not only the change",
+    default = true,
+  },
+  {
+    id = SETTING_PREFIX .. "wrap",
+    desc = "Review: start with long diff lines soft-wrapped",
+    default = false,
+  },
+  {
+    id = SETTING_PREFIX .. "files",
+    desc = "Review: show the changed-files list beside the diff",
+    default = true,
+  },
+}
+
+--- The review's keys, declared on the agent pane.
+---
+--- Plugin-scoped, so they resolve while the agent pane has focus on EVERY tab;
+--- the pane declines them off the Review tab, which is what carries `j`, `tab`
+--- or `esc` on to the terminal. `pageup` / `pagedown` are not here: the pane's
+--- own page keys are routed to the review's pages while it is showing, because
+--- one key is bound to one action.
+review.KEYS = {
+  -- v1's chord and its F-key alternate. `passthrough` leaves a bare
+  -- Ctrl+<letter> to the agent's own line editing while a terminal has focus,
+  -- which is why the F-key exists: it is the one that works from where the
+  -- user is standing.
+  {
+    key = "ctrl+x",
+    action = "review.open",
+    desc = "review this session's changes",
+    scope = "global",
+    group = "UI",
+    passthrough = true,
+  },
+  {
+    key = "f7",
+    action = "review.open",
+    desc = "review this session's changes",
+    scope = "global",
+    group = "UI",
+  },
+
+  { key = "j", action = "review.next", desc = "next line" },
+  { key = "down", action = "review.next", desc = "next line" },
+  { key = "k", action = "review.previous", desc = "previous line" },
+  { key = "up", action = "review.previous", desc = "previous line" },
+  { key = "g", action = "review.top", desc = "first line" },
+  { key = "G", action = "review.bottom", desc = "last line" },
+  { key = "tab", action = "review.next_file", desc = "next file" },
+  { key = "shift+tab", action = "review.previous_file", desc = "previous file" },
+  { key = "]", action = "review.next_hunk", desc = "next hunk" },
+  { key = "[", action = "review.previous_hunk", desc = "previous hunk" },
+  { key = "l", action = "review.right", desc = "scroll right" },
+  { key = "right", action = "review.right", desc = "scroll right" },
+  { key = "h", action = "review.left", desc = "scroll left" },
+  { key = "left", action = "review.left", desc = "scroll left" },
+  { key = "v", action = "review.side", desc = "side-by-side, or unified" },
+  { key = "w", action = "review.wrap", desc = "soft-wrap long lines" },
+  { key = "f", action = "review.files", desc = "show the changed-files list" },
+  { key = "/", action = "review.find", desc = "find in the diff" },
+  -- One key, two meanings, and they never overlap: while the query has the
+  -- keyboard `enter` commits it, and otherwise it folds the file you are on.
+  -- v1 spells the second `cr_toggle_fold` and reaches it from `enter` too.
+  {
+    key = "enter",
+    action = "review.find_commit",
+    desc = "keep the search, or fold this file",
+  },
+  { key = "n", action = "review.find_next", desc = "next match" },
+  { key = "N", action = "review.find_previous", desc = "previous match" },
+  { key = "m", action = "review.mark", desc = "mark this file seen" },
+  -- v1's key for the same picker, so the muscle memory carries.
+  {
+    key = "t",
+    action = "review.target",
+    desc = "review a commit, the branch, or working changes",
+  },
+  -- `r` is refresh, not mark, because `r` is refresh in every other pane and a
+  -- chord that means two things depending on where you are standing is worse
+  -- than one that is spelled differently here.
+  { key = "r", action = "review.refresh", desc = "recompute the diff" },
+  { key = "e", action = "review.send", desc = "send this review to the agent" },
+  { key = "esc", action = "review.close", desc = "close the search, or go back" },
+  { key = "c", action = "review.comment", desc = "note on this line or file" },
+  { key = "s", action = "review.summary", desc = "note on the review as a whole" },
+  { key = "x", action = "review.delete", desc = "delete the note under the cursor" },
+  { key = "delete", action = "review.delete", desc = "delete the note under the cursor" },
+}
+
+--- Draw the review for the selected session inside the agent pane's frame.
+---
+--- `chrome` is what the pane puts on the border of every tab: `border`, the
+--- border style; `strip`, the tab strip for the top-left; and `reserved`, the
+--- column the strip ends at, which the right-aligned title is fitted against.
+function review.render(ctx, chrome)
+  local width, height = ctx.width or 0, ctx.height or 0
+  local edge = chrome.border
+  local session = selected()
+
+  local function frame(opts)
+    local body = opts.body
+    body.frame = {
+      title = fit_title(opts.right or {}, width, chrome.reserved or 0),
+      title_align = "right",
+      border_style = edge,
+      overlay = {
+        top_left = chrome.strip,
+        bottom_left = footer(width, opts.ready == true, opts.sendable == true),
+        right_column = opts.right_column,
+      },
+    }
+    return body
+  end
+
+  -- The pane asks only with a session selected; drawn rather than thrown, if not.
+  if not session then
+    return frame({ body = centred({}) })
+  end
+
+  local id = session.id
+  local here = target_of(id)
+  -- Only ever asked for while the picker is open, so a pane nobody opens the
+  -- picker on runs no `git log` at all.
+  local commits = picking(id) and target.commits(session, refreshing[id])
+    or { state = "idle", list = {} }
+  local entry = published(session)
+  -- One ask, consumed. Cleared HERE rather than in the handler because this is
+  -- the frame that carried it to `run`.
+  refreshing[id] = nil
+
+  -- What the review is OF, and it is the target's name now rather than the
+  -- session's base branch — those were the same thing until there was a
+  -- picker, and a header that kept saying `main..HEAD` over one commit's diff
+  -- would be the pane lying about the only thing it exists to show.
+  local range = target.label(here, session, target.known_commits(session))
+  local range_runs = {
+    { text = " ", style = edge },
+    { text = range, style = { fg = theme.branch } },
+    { text = " ", style = edge },
+  }
+
+  -- The picker outranks every diff state below, including "still building":
+  -- it is how you leave a target that is slow, or that failed, and a picker
+  -- you could not reach from the state it exists to escape would be no use.
+  if picking(id) then
+    local choices = target.choices(session, commits.list)
+    local at = math.min(math.max(1, picker_at(id)), math.max(1, #choices))
+    return frame({
+      right = range_runs,
+      body = target_picker(session, {
+        width = math.max(1, width - 2),
+        height = math.max(1, height - 2),
+        choices = choices,
+        current = here,
+        commits = commits,
+        at = at,
+        elapsed = ctx.elapsed,
+      }),
+    })
+  end
+
+  -- State one: nobody has asked. Since the kernel began driving the request
+  -- from the selection this is a frame or two at most, so it is drawn as the
+  -- transient it now is rather than as a resting state with advice in it.
+  if not entry then
+    return frame({
+      right = range_runs,
+      body = centred({
+        {
+          {
+            text = spinner(ctx.elapsed) .. " Asking for the diff…",
+            style = { fg = theme.muted },
+          },
+        },
+      }),
+    })
+  end
+
+  local epoch = epoch_of(id, entry.state)
+
+  -- State two: asked, not finished. Distinct from "no changes" by motion, not
+  -- only by wording — the property the kernel comments at its publish site.
+  if entry.state == "pending" then
+    return frame({
+      right = range_runs,
+      body = centred({
+        { { text = spinner(ctx.elapsed) .. " Building diff…", style = { fg = theme.accent } } },
+        { { text = range, style = { fg = theme.branch } } },
+      }),
+    })
+  end
+
+  -- State three: it failed, and says why in the kernel's own words.
+  if entry.state == "failed" then
+    return frame({
+      right = range_runs,
+      body = centred({
+        { { text = "could not build the diff", style = { fg = theme.bad, bold = true } } },
+        { { text = entry.error or "no reason given", style = { fg = theme.muted } } },
+        { { text = "press r to try again", style = { fg = theme.hint } } },
+      }),
+    })
+  end
+
+  local parse = diff.parse(scope(id), entry.body or {}, epoch)
+  -- The rows on screen. Two flat lists over one parse — unified, or paired for
+  -- the side-by-side layout — and which one is in force decides what a
+  -- selectable unit IS, so everything downstream takes this and not
+  -- `parse.rows`.
+  local in_force = rows_in_force(parse, id)
+  settle_jump(id, parse, in_force, function(row)
+    move_to(id, in_force, row)
+  end)
+  local reviewed = marks_of(id)
+
+  -- State four: ready, and empty. A static line naming the range it looked at,
+  -- so it can never be mistaken for the animated one above.
+  --
+  -- Asked of the KERNEL's file list rather than the parse's, so it is answered
+  -- on the frame the diff arrives. Waiting for the parse would have shown "No
+  -- changes" for a moment on a diff that has plenty.
+  if #(entry.files or {}) == 0 then
+    return frame({
+      right = range_runs,
+      body = centred({
+        { { text = "No changes", style = { fg = theme.secondary, bold = true } } },
+        { { text = range, style = { fg = theme.branch } } },
+        {
+          {
+            text = session.base_branch and "this worktree matches its base branch"
+              or "nothing uncommitted in this worktree",
+            style = { fg = theme.muted },
+          },
+        },
+      }),
+    })
+  end
+
+  -- State five: a diff. Everything below is the pane proper.
+  --
+  -- Totalled from the kernel's list too: summing the parse's would have the
+  -- header counting up while the body was read, which reads as the diff
+  -- growing rather than as the pane catching up.
+  local added, removed = 0, 0
+  for _, file in ipairs(entry.files or {}) do
+    added = added + file.added
+    removed = removed + file.removed
+  end
+
+  local inner_w, inner_h = math.max(1, width - 2), math.max(1, height - 2)
+  local hits = matches(id, parse, in_force, query(id))
+  local bar = find_open(id) and 1 or 0
+  local notice = (entry.truncated or untracked_short(entry)) and 1 or 0
+  -- The compose block is a strip plus a framed field: one row saying what is
+  -- being noted and how long it lasts, three for the field itself.
+  local held = compose_of(id)
+  local compose_h = held and 4 or 0
+  local body_h = math.max(1, inner_h - bar - notice - compose_h)
+  last_body_height[id] = body_h
+
+  local at = math.min(cursor_of(id), math.max(1, #in_force))
+  local covered = diff.covered(parse)
+  -- Which files are collapsed, as a set, for the header chevrons.
+  local overrides = folds_of(id)
+  local fold_state = {}
+  for _, file in ipairs(entry.files or {}) do
+    if folded(reviewed, overrides, file.path) then
+      fold_state[file.path] = true
+    end
+  end
+  -- The list points wherever it was driven, and otherwise at whatever the body
+  -- is showing.
+  local current_path = list_at(id) or diff.path_of(parse, in_force, at)
+
+  local published_files = entry.files or {}
+  local show_files = files_shown() and inner_w >= FILES_MIN_PANE and #published_files > 0
+  local files_w = 0
+  if show_files then
+    files_w = math.max(FILES_WIDTH_MIN, math.min(FILES_WIDTH_MAX, math.floor(inner_w * 0.3)))
+  end
+  local body_w = math.max(1, inner_w - (show_files and (files_w + 1) or 0))
+
+  -- Side by side neither wraps nor scrolls horizontally: a wrapped half would
+  -- have to push the other half's rows down to stay level, and the alignment
+  -- IS the layout. v1 pins both for the same reason.
+  local wrap = wrapping() and not side_by_side()
+  local digits = rows.gutter_digits(parse)
+  local window = {
+    width = body_w,
+    height = body_h,
+    digits = digits,
+    wrap = wrap,
+    hscroll = (wrap or side_by_side()) and 0 or hscroll_of(id),
+    query = query(id) and string.lower(query(id)) or nil,
+    reviewed = reviewed,
+    folded = fold_state,
+    canonical = parse.rows,
+    -- A row's language, by the file it belongs to. A function rather than a
+    -- table because the window only ever asks about the rows it draws — a
+    -- 400-file diff would otherwise build 400 entries a frame to use forty.
+    lang_of = highlighting() and function(row)
+      return syntax.lang_of(parse, row.file)
+    end or nil,
+    selected = at,
+  }
+  local top = rows.scroll_to(in_force, math.min(top_of(id), at), window)
+  local lines, logical, used = rows.window(in_force, top, window)
+  last_body_map[id] = logical
+  if used ~= top_of(id) then
+    set_top(id, used)
+  end
+
+  -- The diff body: a SURFACE. Its own `scroll` stays 0 — the window above is
+  -- logical, and the surface's offset counts visual lines, so letting it
+  -- scroll too would be two anchors fighting over one body.
+  -- `id` on a surface is what makes the body clickable. Nothing else is
+  -- needed: the kernel records the rect of any node carrying identity, and a
+  -- click comes back with coordinates inside it.
+  local body = { type = "surface", id = "body", cells = lines, fill = 1 }
+
+  local content = { body }
+  if show_files then
+    table.insert(content, 1, {
+      type = "text",
+      len = 1,
+      text = (function()
+        local column = {}
+        for row = 1, body_h do
+          column[row] = { { text = DIVIDER, style = edge } }
+        end
+        return column
+      end)(),
+    })
+    table.insert(
+      content,
+      1,
+      files_pane(entry.files or {}, {
+        width = files_w,
+        height = body_h,
+        current = current_path,
+        covered = covered,
+        parsed = parse.done,
+        reviewed = reviewed,
+      })
+    )
+  end
+
+  local stack = {}
+  if notice == 1 then
+    stack[#stack + 1] = {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          {
+            text = rows.pad(" " .. truncation_notice(entry, parse) .. " ", inner_w),
+            style = { fg = theme.role("inverted_fg"), bg = theme.bad, bold = true },
+          },
+        },
+      },
+    }
+  end
+  if bar == 1 then
+    stack[#stack + 1] = find_bar(id, inner_w, hits, at)
+  end
+  stack[#stack + 1] = { type = "box", axis = "horizontal", fill = 1, children = content }
+  if held then
+    stack[#stack + 1] = compose_strip(inner_w, held)
+    -- The fourth node kind, and the only one this pane had not used. A field
+    -- is a value and a caret; the buffer lives in `state` and the editing in
+    -- `lib.textinput`, which is the split that lets a reload keep what you
+    -- typed.
+    stack[#stack + 1] = textinput.node(held.field, {
+      label = notes.LABEL[held.class] or "Note",
+      focused = ctx.focused,
+    })
+  end
+
+  -- The parse is still running: say so on the border rather than in the body,
+  -- which is already showing the part that is readable.
+  --
+  -- The percentage is also what KEEPS the parse running. An idle interface
+  -- paints at `FORCE_REDRAW_INTERVAL` — four frames a second — and the parse
+  -- only advances when this function is called. A progress figure that changes
+  -- every frame makes the tree differ, which is what holds `dirty` set and
+  -- brings the loop back to its 60fps floor until the parse is done. Drawing
+  -- the progress is not decoration here; it is the thing that converges.
+  local right = range_runs
+  if not parse.done then
+    right = {
+      { text = " ", style = edge },
+      {
+        text = "reading " .. math.floor(diff.progress(parse) * 100) .. "%",
+        style = { fg = theme.warn },
+      },
+      { text = " ", style = edge },
+    }
+  else
+    right = {
+      { text = " ", style = edge },
+      { text = range, style = { fg = theme.branch } },
+      { text = "  +" .. added, style = { fg = theme.role("diff_added") } },
+      { text = " -" .. removed, style = { fg = theme.role("diff_removed") } },
+      { text = " ", style = edge },
+    }
+  end
+
+  return frame({
+    ready = true,
+    sendable = #notes.all(state, id) > 0,
+    right = right,
+    -- `inner_h`, not the pane height: the column is painted into the inner
+    -- rows, so a bar built for two rows more put its ▼ past the last one and
+    -- lost it. Caught in a capture, not in a check.
+    right_column = scrollbar(inner_h, #in_force, at - 1),
+    body = { type = "box", axis = "vertical", fill = 1, children = stack },
+  })
+end
+
+--- Raw keys, for the find query only.
+---
+--- Reached only after the registry has offered the chord as an action, so
+--- every letter handled here is one `on_action` deliberately declined while
+--- the query has the keyboard.
+function review.on_key(key)
+  local id = current_id()
+  if not id then
+    return false
+  end
+  -- Composing takes every key the declared actions above declined. The editing
+  -- itself is `lib.textinput`'s, so this pane does not carry a second line
+  -- editor; the field is written back WHOLE because reading `state` hands back
+  -- a copy, and mutating that copy changes nothing.
+  if composing(id) then
+    local held = compose_of(id)
+    if held.field and textinput.key(held.field, key) then
+      set_compose(id, held)
+      return true
+    end
+    return false
+  end
+  if not finding(id) then
+    return false
+  end
+  if key.key == "backspace" then
+    set_query(id, string.sub(query(id) or "", 1, -2))
+    return true
+  end
+  if key.char and not key.ctrl and not key.alt and widgets.len(key.char) == 1 then
+    set_query(id, (query(id) or "") .. key.char)
+    return true
+  end
+  return false
+end
+
+function review.on_click(hit)
+  if hit.id == "body" then
+    -- A coordinate, resolved through the map the last frame recorded. The
+    -- surface has no per-line identity to hand back, and does not need one.
+    local session = selected()
+    local map = session and last_body_map[session.id]
+    local row = map and map[(hit.y or 0) + 1]
+    if not row then
+      return false
+    end
+    local entry = published(session)
+    if not entry or entry.state ~= "ready" then
+      return false
+    end
+    local parse = diff.parse(scope(session.id), entry.body or {}, epoch_now(session.id))
+    move_to(session.id, rows_in_force(parse, session.id), row)
+    return true
+  end
+
+  local key = hit.id and string.match(hit.id, "^target:(.+)$")
+  if key then
+    local session = selected()
+    if not session then
+      return false
+    end
+    local choices = target.choices(session, target.commits(session).list)
+    for index, choice in ipairs(choices) do
+      if target.key(choice.target) == key then
+        if choice.needs_trust then
+          -- Selecting it would fail; moving to it says which one you meant and
+          -- leaves the reason on screen beside it.
+          set_picker(session.id, index)
+        else
+          target.set(state, session.id, choice.target)
+          set_picker(session.id, nil)
+        end
+        return true
+      end
+    end
+    return false
+  end
+
+  local path = hit.id and string.match(hit.id, "^file:(.+)$")
+  if not path then
+    return false
+  end
+  local session = selected()
+  if not session then
+    return false
+  end
+  local entry = published(session)
+  if not entry or entry.state ~= "ready" then
+    return false
+  end
+  local parse = diff.parse(scope(session.id), entry.body or {}, epoch_now(session.id))
+  local in_force = rows_in_force(parse, session.id)
+  local row = diff.file_row(in_force, path)
+  if row then
+    move_to(session.id, in_force, row)
+  else
+    -- The list is the kernel's and is complete; the body is this pane's and is
+    -- not, yet. Remember the ask and let the parse deliver it.
+    wanted[scope(session.id)] = path
+  end
+  return true
+end
+
+--- A declared key, while the Review tab is showing.
+---
+--- `leave` shows the Agent tab — the way out of a review, for `esc` and after a
+--- send, as v1's review was a tab of the centre and leaving it showed the
+--- terminal again.
+function review.on_action(action, leave)
+  local session = selected()
+  if not session then
+    return action ~= "review.close"
+  end
+  local id = session.id
+
+  -- COMPOSING OWNS THE KEYBOARD, for the same reason and by the same rule as
+  -- the find query below: every letter this pane declares is a letter somebody
+  -- will type into a note. `esc` cancels, `↵` saves, `⇥` cycles the class, and
+  -- everything else is declined here so `on_key` sees it as typing.
+  if composing(id) then
+    if action == "review.close" then
+      set_compose(id, nil)
+      return true
+    end
+    if action == "review.find_commit" then
+      local held = compose_of(id)
+      local text = (held.field and held.field.value or ""):gsub("^%s*(.-)%s*$", "%1")
+      if text ~= "" then
+        if held.editing then
+          notes.update(state, id, held.editing, { text = text, class = held.class })
+        else
+          local note = {
+            kind = held.anchor.kind,
+            path = held.anchor.path,
+            side = held.anchor.side,
+            line = held.anchor.line,
+            class = held.class,
+            text = text,
+          }
+          notes.add(state, id, note)
+        end
+        -- Writing a note UNFOLDS the file it is on. Marking a file seen folds
+        -- it, so noting something on a file you had ticked off saved the note
+        -- and hid it in the same keystroke — the note was there, in the export
+        -- and in the state, and invisible. v1 hides a folded file's comments
+        -- too, but v1 folds after reviewing rather than as a side effect of
+        -- the key next to the note key.
+        --
+        -- The fold is cleared rather than toggled: `folded` is
+        -- `marks XOR override`, so making the override MATCH the mark is what
+        -- shows the file, whichever way it was folded.
+        local path = held.anchor and held.anchor.path
+        if path then
+          local overrides = folds_of(id)
+          overrides[path] = marks_of(id)[path] and true or nil
+          state["fold:" .. id] = overrides
+        end
+      end
+      set_compose(id, nil)
+      return true
+    end
+    if action == "review.next_file" or action == "review.previous_file" then
+      local held = compose_of(id)
+      held.class = notes.next_class(held.class)
+      set_compose(id, held)
+      return true
+    end
+    return false
+  end
+
+  -- THE FIND QUERY OWNS THE KEYBOARD while it is being typed, and this gate is
+  -- first for a reason found by running it: with the gate further down, typing
+  -- `greet` reached `review.refresh` on the `r` and the query came out `geet`.
+  -- Every letter this pane binds is a letter somebody will type into a search
+  -- box, so the only safe order is to decline them all before any of them is
+  -- looked at. Returning false is what lets `on_key` below see the character.
+  if finding(id) then
+    if action == "review.close" then
+      close_find(id)
+      return true
+    end
+    if action == "review.find_commit" then
+      -- v1's Tab: stop capturing, keep the bar for its highlighting, and leave
+      -- `n`/`N` stepping from where the cursor is.
+      state["typing:" .. id] = nil
+      return true
+    end
+    return false
+  end
+
+  -- THE PICKER OWNS THE KEYBOARD while it is open, by the same rule as the two
+  -- gates above: `j` and `k` move in it, `↵` chooses, and every other key this
+  -- pane binds would act on a diff that is not on screen.
+  --
+  -- Deliberately ABOVE the "needs the diff" line: the picker is how you leave a
+  -- target that is slow or that failed, so it has to work in exactly the states
+  -- where there is no diff to act on.
+  if picking(id) then
+    local choices = target.choices(session, target.commits(session).list)
+    local at = math.min(math.max(1, picker_at(id)), math.max(1, #choices))
+    if action == "review.close" or action == "review.target" then
+      set_picker(id, nil)
+      return true
+    end
+    if action == "review.next" then
+      set_picker(id, math.min(at + 1, #choices))
+    elseif action == "review.previous" then
+      set_picker(id, math.max(at - 1, 1))
+    elseif action == "review.page_down" then
+      set_picker(id, math.min(at + PAGE, #choices))
+    elseif action == "review.page_up" then
+      set_picker(id, math.max(at - PAGE, 1))
+    elseif action == "review.top" then
+      set_picker(id, 1)
+    elseif action == "review.bottom" then
+      set_picker(id, math.max(1, #choices))
+    elseif action == "review.refresh" then
+      -- The commit list, not the diff: it is what you are looking at.
+      refreshing[id] = true
+    elseif action == "review.find_commit" then
+      local chosen = choices[at]
+      if chosen and not chosen.needs_trust then
+        target.set(state, id, chosen.target)
+        set_picker(id, nil)
+      end
+    end
+    return true
+  end
+
+  if action == "review.target" then
+    local choices = target.choices(session, target.commits(session).list)
+    local here = target_of(id)
+    local at = 1
+    for index, choice in ipairs(choices) do
+      if target.same(session, choice.target, here) then
+        at = index
+      end
+    end
+    -- Opening ON the target in force, so `t ↵` is a no-op rather than a
+    -- surprise — v1 does the same, and it is what makes `t` safe to press to
+    -- find out what you are looking at.
+    set_picker(id, at)
+    return true
+  end
+
+  -- Everything below this line needs the diff. The three that do not are
+  -- handled first so they still work while one is being built.
+  if action == "review.close" then
+    if find_open(id) then
+      close_find(id)
+      return true
+    end
+    -- The same destination as the key that opened it. Closing a review means
+    -- the centre showing its main pane again — v1's behaviour, and what the
+    -- open key now does; an `Esc` that went somewhere else would make the two
+    -- ways out of this pane disagree.
+    leave()
+    return true
+  end
+  if action == "review.refresh" then
+    -- Drops the kernel's cached answer; the loop re-requests on the next
+    -- frame and the worker recomputes. Ours goes too, so a recomputed diff of
+    -- exactly the same shape is still re-read.
+    command("diff", { session = id })
+    -- Every target's, not only the one on screen: `r` means "ask git again",
+    -- and coming back to a target you refreshed away from should not be served
+    -- the parse of a diff you deliberately discarded.
+    diff.forget_all(id)
+    target.forget(id)
+    -- One ask, not a state: the flag is consumed by the render it reaches, so
+    -- `refresh = true` never becomes "run git on every frame".
+    refreshing[id] = true
+    match_cache[scope(id)] = nil
+    return true
+  end
+  if action == "review.summary" then
+    set_compose(id, {
+      field = textinput.new(""),
+      class = "note",
+      anchor = { kind = "review" },
+    })
+    return true
+  end
+
+  local entry = published(session)
+  if not entry or entry.state ~= "ready" then
+    return true
+  end
+  local parse = diff.parse(scope(id), entry.body or {}, epoch_now(id))
+  local in_force = rows_in_force(parse, id)
+  local at = math.min(cursor_of(id), math.max(1, #in_force))
+
+  if action == "review.next" then
+    move_to(id, in_force, at + 1)
+  elseif action == "review.previous" then
+    move_to(id, in_force, at - 1)
+  elseif action == "review.page_down" then
+    page(id, in_force, 1)
+  elseif action == "review.page_up" then
+    page(id, in_force, -1)
+  elseif action == "review.top" then
+    move_to(id, in_force, 1)
+    set_top(id, 1)
+  elseif action == "review.bottom" then
+    move_to(id, in_force, #in_force)
+  elseif action == "review.next_file" or action == "review.previous_file" then
+    -- Walks the LIST, not the body's file rows. Before `962aef7` those were
+    -- the same set; now the list is complete and the body is capped, so
+    -- walking the body's rows could reach 77 of 400 files and the other 323
+    -- were named on screen and unreachable by any key.
+    --
+    -- Where the body can follow, it does, and the two stay in step. Where it
+    -- cannot — a file whose patch was cut — only the list moves, and the row
+    -- it lands on is the muted kind that says why.
+    local delta = action == "review.next_file" and 1 or -1
+    local from = list_at(id) or diff.path_of(parse, in_force, at)
+    local to = step_listed(entry.files or {}, from, delta)
+    if to then
+      local row = diff.file_row(in_force, to)
+      if row then
+        move_to(id, in_force, row)
+      else
+        set_list_at(id, to)
+      end
+    end
+  elseif action == "review.next_hunk" then
+    local to = diff.jump(in_force, at, HUNK_KINDS, 1)
+    if to then
+      move_to(id, in_force, to)
+    end
+  elseif action == "review.previous_hunk" then
+    local to = diff.jump(in_force, at, HUNK_KINDS, -1)
+    if to then
+      move_to(id, in_force, to)
+    end
+  elseif action == "review.right" then
+    set_hscroll(id, hscroll_of(id) + HSCROLL_STEP)
+  elseif action == "review.left" then
+    set_hscroll(id, math.max(0, hscroll_of(id) - HSCROLL_STEP))
+  elseif action == "review.side" then
+    -- The cursor is an index into the list in force, and the two lists are
+    -- different lengths — a hunk of twenty deletions is twenty rows unified
+    -- and twenty paired rows only if twenty additions matched it. Left alone,
+    -- `v` would move you to a different file. Remapped through the diff line
+    -- the cursor was on, so the layout changes under you and your place does
+    -- not.
+    local was = in_force
+    -- Computed from what the setting is ABOUT to be, not from a re-read: the
+    -- command lands a frame later, so reading it back here would remap
+    -- through the layout that is still on screen.
+    local going = set_toggle("side", false)
+    local now = going and diff.paired(parse) or parse.rows
+    set_cursor(id, diff.remap(parse, was, at, now))
+    set_top(id, 1)
+    -- Neither offset survives the change: side-by-side pins both, and coming
+    -- back from it with a stale horizontal scroll would look like the pane had
+    -- lost the left edge.
+    set_hscroll(id, 0)
+  elseif action == "review.wrap" then
+    set_toggle("wrap", false)
+    -- Wrapping shows every column, so an offset into the text would only
+    -- confuse the next unwrapped frame.
+    set_hscroll(id, 0)
+  elseif action == "review.files" then
+    set_toggle("files", true)
+  elseif action == "review.find" then
+    -- Re-opening keeps the query: `/` after a committed search puts the cursor
+    -- back in it rather than making you type it again.
+    state["find:" .. id], state["typing:" .. id] = true, true
+  elseif action == "review.find_commit" then
+    local row = in_force[at]
+    if row and row.kind == "note" then
+      -- On a note, `↵` edits it — v1's `cr_enter`, which edits when the cursor
+      -- is on a comment and folds otherwise.
+      set_compose(id, {
+        field = textinput.new(row.note.text or ""),
+        class = row.note.class or "note",
+        anchor = {
+          kind = row.note.kind,
+          path = row.note.path,
+          side = row.note.side,
+          line = row.note.line,
+        },
+        editing = row.note.id,
+      })
+      return true
+    end
+    -- Not on a note, so this is the fold. The cursor is put on the file's
+    -- header first: it is the one row a fold keeps, so the cursor cannot be
+    -- left pointing into rows that are about to disappear.
+    local path = list_at(id) or diff.path_of(parse, in_force, at)
+    if not path then
+      return true
+    end
+    local header = diff.file_row(in_force, path)
+    if header then
+      move_to(id, in_force, header)
+    end
+    toggle_fold(id, path)
+    set_top(id, 1)
+  elseif action == "review.find_next" or action == "review.find_previous" then
+    local hits = matches(id, parse, in_force, query(id))
+    if #hits == 0 then
+      return true
+    end
+    local forward = action == "review.find_next"
+    local to = nil
+    if forward then
+      for _, row in ipairs(hits) do
+        if row > at then
+          to = row
+          break
+        end
+      end
+      to = to or hits[1]
+    else
+      for index = #hits, 1, -1 do
+        if hits[index] < at then
+          to = hits[index]
+          break
+        end
+      end
+      to = to or hits[#hits]
+    end
+    move_to(id, in_force, to)
+  elseif action == "review.comment" then
+    local anchor = notes.anchor_for(parse, in_force, at)
+    if anchor then
+      set_compose(id, { field = textinput.new(""), class = "note", anchor = anchor })
+    end
+  elseif action == "review.delete" then
+    local row = in_force[at]
+    if row and row.kind == "note" then
+      notes.remove(state, id, row.note.id)
+      -- The row under the cursor just went; step back so the cursor is not
+      -- left one past whatever took its place.
+      move_to(id, rows_in_force(parse, id), math.max(1, at - 1))
+    end
+  elseif action == "review.mark" then
+    -- The LIST's file, so a file whose patch was cut can still be marked seen.
+    -- Reading a file you cannot open here — in an editor, on a forge — and
+    -- ticking it off is a real thing to want, and it is the only thing the
+    -- pane can offer for those files.
+    local path = list_at(id) or diff.path_of(parse, in_force, at)
+    if path then
+      toggle_mark(id, path)
+    end
+  elseif action == "review.send" then
+    command("send", {
+      session = id,
+      text = "Please address the following code review:\n\n"
+        -- Exported from the CANONICAL rows whichever layout is on screen: a
+        -- quoted hunk is a diff, and a diff is unified. Which columns the
+        -- reviewer happened to be looking at is not the agent's business.
+        .. export.markdown(
+          session,
+          parse,
+          diff.remap(parse, in_force, at, parse.rows),
+          marks_of(id),
+          notes.all(state, id),
+          -- What was reviewed, in the words the header used. Without it a
+          -- review of one commit arrives as a list of line numbers against a
+          -- worktree that has moved on.
+          target.label(target_of(id), session, target.known_commits(session))
+        ),
+    })
+    -- Out to the pane that shares this slot, to watch the agent read it —
+    -- the same way out as `esc` and the open key.
+    leave()
+  else
+    return false
+  end
+  return true
+end
+
+return review

@@ -187,12 +187,9 @@ local function snapshot(diff)
       keys = { { action = "sessions.toggle_panel", key = "f9", plugin = "sessions" } },
     },
     settings = {},
-    -- The interface's own inventory, which is how the pane finds what shares
-    -- its slot. Two occupants of `center`, as the stock arrangement has.
     plugins = {
       { name = "sessions", slot = "sessions", kind = "pane", state = "visible" },
       { name = "agent", slot = "center", kind = "pane", state = "visible" },
-      { name = "review", slot = "center", kind = "pane", state = "hidden" },
     },
     focus = focused_pane,
     -- Answers to the programs THIS plugin asked for. Empty unless a test filled
@@ -200,6 +197,9 @@ local function snapshot(diff)
     runs = runs_backing,
   }
   store_backing.selected = "s1"
+  -- The review is the agent pane's Review tab, so every block here starts on it.
+  -- `tests/agent.lua` asks what the other two tabs do.
+  state_backing["tab:s1"] = "review"
 end
 
 --- A body of `files` files with `lines` changed lines each.
@@ -245,10 +245,28 @@ local function walk(node, visit)
   end
 end
 
---- Every string in the tree, joined per text node.
+--- Every string in the tree, joined per text node — and per border slot, since
+--- the header and the key hints are drawn on the kernel frame's border cells.
 local function texts(node)
   local out = {}
+  local function runs(value)
+    if type(value) == "table" then
+      local parts = {}
+      for _, run in ipairs(value) do
+        parts[#parts + 1] = type(run) == "table" and (run.text or "") or tostring(run)
+      end
+      out[#out + 1] = table.concat(parts)
+    elseif value ~= nil then
+      out[#out + 1] = tostring(value)
+    end
+  end
   walk(node, function(item)
+    if item.frame then
+      runs(item.frame.title)
+      for _, slot in ipairs({ "top_left", "top_right", "bottom_left", "bottom_right" }) do
+        runs(item.frame.overlay and item.frame.overlay[slot])
+      end
+    end
     if item.type ~= "text" then
       return
     end
@@ -438,7 +456,7 @@ local function hasnt(name, text, needle)
 end
 
 local target_lib = require("thurbox-code-review.lib.target")
-local plugin = assert(loadfile(REPO .. "/plugins/40_review.lua"))()
+local plugin = assert(loadfile(REPO .. "/plugins/20_agent.lua"))()
 local CTX = { width = 120, height = 40, focused = true, elapsed = 0 }
 
 local function render(ctx)
@@ -947,99 +965,60 @@ do
   diff.forget("s1")
 end
 
-print("== the way out is the pane that shares the slot ==")
+print("== the way out is the Agent tab ==")
 do
-  -- v1's review is a tab of the centre pane, so leaving it shows the terminal
-  -- again. `command("focus", { toggle = true })` returns to wherever focus came
-  -- from instead — which is the session list, if that is where the key was
-  -- pressed. This asserts the v1 answer, from BOTH starting points.
+  -- The review is a tab of the agent pane, as v1 had it, so leaving it shows the
+  -- agent's terminal again — whichever pane the key was pressed from — and no
+  -- other pane is ever focused on the way in or out.
   local diff = require("thurbox-code-review.lib.diff")
   diff.forget("s1")
-
-  local function focused_now()
-    local last = commands[#commands]
-    return last and last.kind == "focus" and last.args and last.args.text or nil
+  for index = #commands, 1, -1 do
+    commands[index] = nil
   end
 
-  -- From the agent: the key opens the review.
-  focused_pane = "agent"
   snapshot(ready(2, 3))
   plugin.on_action("review.open")
-  eq("opens onto itself", focused_now(), "review")
-
-  -- Focused: the same key leaves, onto the slot's other occupant.
-  focused_pane = "review"
-  snapshot(ready(2, 3))
+  eq("the open key toggles back to the agent tab", state_backing["tab:s1"], nil)
   plugin.on_action("review.open")
-  eq("leaves onto the agent", focused_now(), "agent")
-  check("and does not ask the kernel to toggle", commands[#commands].args.toggle == nil)
-
-  -- The case that prompted this: opened FROM THE SESSION LIST, the way out is
-  -- still the agent and not the list.
-  focused_pane = "sessions"
-  snapshot(ready(2, 3))
-  plugin.on_action("review.open")
-  eq("opens from the list too", focused_now(), "review")
-  focused_pane = "review"
-  snapshot(ready(2, 3))
-  plugin.on_action("review.open")
-  eq("and still leaves onto the agent", focused_now(), "agent")
+  eq("and in again", state_backing["tab:s1"], "review")
 
   -- `esc` and a send leave the same way, so the exits cannot disagree.
   plugin.on_action("review.close")
-  eq("esc leaves onto the agent", focused_now(), "agent")
+  eq("esc leaves onto the agent tab", state_backing["tab:s1"], nil)
+  state_backing["tab:s1"] = "review"
   plugin.on_action("review.send")
-  eq("send leaves onto the agent", focused_now(), "agent")
+  eq("send leaves onto the agent tab, to watch it read", state_backing["tab:s1"], nil)
 
-  -- A disabled sibling is not a destination.
-  thurbox.plugins = {
-    { name = "agent", slot = "center", kind = "pane", state = "disabled" },
-    { name = "review", slot = "center", kind = "pane", state = "visible" },
-  }
-  plugin.on_action("review.close")
-  eq("with no one to land on, it asks the kernel", focused_now(), "review")
-  check("by toggling", commands[#commands].args.toggle == true)
+  local elsewhere = nil
+  for _, entry in ipairs(commands) do
+    if entry.kind == "focus" and entry.args.text ~= "agent" then
+      elsewhere = entry.args.text
+    end
+  end
+  eq("and only the agent pane is ever focused", elsewhere, nil)
 
-  focused_pane = "agent"
   diff.forget("s1")
 end
 
 print("== the session-column toggle is on the border ==")
 do
-  -- v1 paints the collapse chevron on the left of the CENTRAL pane's top border,
-  -- on every central view. This pane replaces the agent in that slot, so without
-  -- it `F9` and its arrow vanish from the screen for as long as you read a diff.
+  -- The strip is the agent pane's own, drawn on every tab — so the chevron is on
+  -- the review's border because it is on the agent's, not because a second pane
+  -- drew a copy of it.
   local diff = require("thurbox-code-review.lib.diff")
   diff.forget("s1")
   snapshot(ready(2, 3))
 
-  --- Every node carrying a click verb, with the text it draws.
-  local function verbs(node)
-    local out = {}
-    walk(node, function(item)
-      if item.role and item.role:match("^action:") then
-        local parts = {}
-        for _, line in ipairs(type(item.text) == "table" and item.text or {}) do
-          for _, run in ipairs(line) do
-            parts[#parts + 1] = run.text or ""
-          end
-        end
-        out[#out + 1] = { role = item.role, text = table.concat(parts), len = item.len }
-      end
-    end)
-    return out
-  end
-
-  local found = verbs(render())
-  check("the chevron carries a click verb", #found >= 1, "found " .. #found)
-  for _, hit in ipairs(found) do
-    eq("and it is the session toggle", hit.role, "action:sessions.toggle_panel")
-    check("with an exact width, so the geometry is unchanged", hit.len ~= nil)
+  local toggles = 0
+  local tree = render()
+  for _, run in ipairs((tree.frame and tree.frame.overlay and tree.frame.overlay.top_left) or {}) do
+    if run.role == "action:sessions.toggle_panel" then
+      toggles = toggles + 1
+    end
   end
   -- Two runs, ONE target: the chevron reads accent and the hint muted, but both
-  -- carry the same verb so the kernel hit-tests them as one button. Split
-  -- differently, the hint is inert and the label feels like it has a hole.
-  eq("chevron and hint are both targets", #found, 2)
+  -- carry the same verb so the kernel hit-tests them as one button.
+  eq("chevron and hint are both targets", toggles, 2)
 
   local drawn = joined(render())
   check("the arrow points the way the list will move", drawn:find("◀", 1, true) ~= nil)
@@ -1146,6 +1125,9 @@ do
     commands[index] = nil
   end
   plugin.on_action("review.send")
+  eq("sending shows the agent tab, to watch it read", state_backing["tab:s1"], nil)
+  -- Back onto the review, as F7 would, for the blocks below that keep using it.
+  state_backing["tab:s1"] = "review"
   local sent = nil
   for _, entry in ipairs(commands) do
     if entry.kind == "send" then
@@ -1627,7 +1609,7 @@ do
     },
   }
   store_backing.selected = nil
-  has("it says so", joined(render()), "No session selected")
+  has("the agent pane's own empty frame is drawn", joined(render()), "No active sessions")
 end
 
 print(string.format("\n%d checks, %d failures", count, failures))
