@@ -1291,7 +1291,13 @@ end
 --- runs instead dropped the label and kept the key, so a 60-column pane advertised
 --- a bare `e` — a chord with nothing to say what it does, which is worse than no
 --- chord at all.
-local function footer(width, ready)
+---
+--- `sendable` is whether any note has been written. Until one has, `send` has
+--- nothing to send and is the first hint to go; once one has, it is the thing to
+--- do next and sits beside `note`, because the pane beside the session list is
+--- ~90 columns and a strip trimmed from the right lost it on exactly the screen
+--- where a note had just been written.
+local function footer(width, ready, sendable)
   local hints = {}
   local function put(label, keys)
     hints[#hints + 1] = hint(label, keys)
@@ -1305,6 +1311,9 @@ local function footer(width, ready)
     put("hunk", "[ ]")
     put("find", "/")
     put("note", "c")
+    if sendable then
+      put("send", "e")
+    end
     put("fold", "↵")
     -- Every key that changes what the BODY looks like belongs here. `w` was
     -- dropped from this list when `v` was added — replaced rather than added to
@@ -1317,7 +1326,9 @@ local function footer(width, ready)
     put("seen", "m")
     put("target", "t")
     put("refresh", "r")
-    put("send", "e")
+    if not sendable then
+      put("send", "e")
+    end
   end
   local function measure()
     local used = 0
@@ -1565,7 +1576,7 @@ return {
         left = left,
         right = opts.right,
         right_column = opts.right_column,
-        footer = footer(width, opts.ready == true),
+        footer = footer(width, opts.ready == true, opts.sendable == true),
         body = opts.body,
       })
     end
@@ -1869,6 +1880,7 @@ return {
 
     return frame({
       ready = true,
+      sendable = #notes.all(state, id) > 0,
       right = right,
       -- `inner_h`, not the pane height: the column is painted into the inner
       -- rows, so a bar built for two rows more put its ▼ past the last one and

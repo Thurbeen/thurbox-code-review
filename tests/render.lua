@@ -523,6 +523,31 @@ do
   has("pending footer offers refresh", pending, "refresh")
 end
 
+print("== once there are notes, the footer says how to send them ==")
+do
+  -- Found reviewing in a sandbox, not in a test: beside the session list the pane
+  -- is ~90 columns, the strip is trimmed from the right, and `send` was the
+  -- rightmost hint — so the one key that does anything with a note was the first
+  -- to go, on exactly the screen where a note had just been written.
+  local diff = require("thurbox-code-review.lib.diff")
+  diff.forget("s1")
+  forget("s1")
+  snapshot(ready(2, 4))
+  local narrow = { width = 90, height = 30, focused = true, elapsed = 0 }
+  render(narrow)
+  plugin.on_action("review.top")
+  plugin.on_action("review.next")
+  plugin.on_action("review.next")
+  plugin.on_action("review.comment")
+  for _, ch in utf8.codes("check this") do
+    plugin.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
+  end
+  plugin.on_action("review.find_commit")
+  has("a narrow pane with a note offers send", joined(render(narrow)), "send")
+  forget("s1")
+  diff.forget("s1")
+end
+
 print("== usable while the body is still being read ==")
 do
   -- 40 files is more than one `LINES_PER_FRAME` bite, so the first render
