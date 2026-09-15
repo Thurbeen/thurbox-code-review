@@ -2083,8 +2083,8 @@ function review.on_action(action, leave)
           target.label(target_of(id), session, target.known_commits(session))
         ),
     })
-    -- Out to the pane that shares this slot, to watch the agent read it —
-    -- the same way out as `esc` and the open key.
+    -- Onto the Agent tab, to watch the agent read it — the same way out as
+    -- `esc` and the open key.
     leave()
   else
     return false

@@ -138,11 +138,33 @@ after  ╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ── weather (cla
    (or `F6`) → `]` → `plugins/20_agent.lua` → `r` (or `space`, if you turned it
    off in step 3). `plugin check` then lists `agent` again.
 
+### Upgrading from v0.1.0, the standalone review pane
+
+v0.1.0 installed `plugins/40_review.lua`, and `plugins.toml` still names that
+file. `thurbox-cli plugin update` moves the clone to this version and then has
+nothing to load: it reports `updated thurbox-code-review/plugins/40_review.lua`,
+and `plugin check` shows thurbox's own `agent` and no `review`. Remove the old
+entry by its file and install again:
+
+```bash
+thurbox-cli plugin remove thurbox-code-review/plugins/40_review.lua
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+```
+
+Then carry on from step 3. Plugin state and grants belong to a file, and the file
+is a different one now, so three things do not come across: notes written in
+v0.1.0 (which a restart would have lost anyway), the four view settings (now
+`review_*` on the agent pane, back at their defaults), and a `run` grant (step 6
+again).
+
 ## Troubleshooting
 
 **There is no Review tab.** Run `thurbox-cli plugin check`.
 
 - `agent, agent` — the bundled pane still loads. Do step 3.
+- `agent` and `review`, or `agent` alone right after a `plugin update` — that is
+  v0.1.0's entry. See
+  [Upgrading from v0.1.0](#upgrading-from-v010-the-standalone-review-pane).
 - no `agent` at all — this pane is off. Do step 5. A load error shows on its row
   in the Interface tab, and in `thurbox-cli plugin list`.
 - an older thurbox — `thurbox-cli version` below 2.24.0. Upgrade thurbox.
