@@ -1,0 +1,31 @@
+# How this repository declares its gate to the publish skill.
+version: 1
+
+forge: github
+base: main
+
+review:
+  rules:
+    - README.md
+    - KERNEL-GAPS.md
+
+gate:
+  - name: lint
+    run:
+      - selene .
+      - stylua --check .
+    fix: stylua .
+  - name: test
+    run:
+      - tests/run.sh
+      - tests/run.sh --render
+    instructions: >-
+      Both need THURBOX_REPO pointing at a directory holding thurbox's `ui/`
+      at the tag CI pins (THURBOX_TAG in .github/workflows/ci.yml) — a
+      checkout, or `git archive <tag> ui thurbox.yml` extracted somewhere
+      outside this working copy. The tests load that tag's real lib.widgets,
+      so a different tag tests a different interface.
+
+ci:
+  required: true
+  timeout: 15m
