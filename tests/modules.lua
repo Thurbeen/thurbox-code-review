@@ -9,6 +9,8 @@
 local REPO = assert(os.getenv("REPO"), "REPO=")
 local UI = assert(os.getenv("UI"), "UI=")
 
+dofile(REPO .. "/tests/text.lua")
+
 -- The snapshot the bundled lib reads.
 local roles = {}
 for _, name in ipairs({

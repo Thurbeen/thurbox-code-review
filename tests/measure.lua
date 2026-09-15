@@ -8,6 +8,8 @@ local REPO = assert(os.getenv("REPO"), "REPO=")
 local UI = assert(os.getenv("UI"), "UI=")
 local DIFF = os.getenv("DIFF")
 
+dofile(REPO .. "/tests/text.lua")
+
 local roles = setmetatable({}, {
   __index = function()
     return "#808080"
