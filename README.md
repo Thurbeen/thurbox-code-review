@@ -29,7 +29,7 @@ first consumer of `thurbox.diffs` anywhere.
 
 A plugin cannot add a tab to a pane it does not own, so this repository ships
 **its own agent pane**: thurbox's `ui/plugins/20_agent.lua`, vendored unchanged
-from **thurbox v2.25.0**, plus the Review tab. The review itself lives in
+from **thurbox v2.35.2**, plus the Review tab. The review itself lives in
 `lib/`. Agent and Shell draw and take keys exactly as in thurbox's pane — the
 tests render both side by side to prove it.
 
@@ -45,21 +45,43 @@ That has three consequences, and the install steps below deal with each:
 What changes on the border:
 
 ```text
-before ╭ ◀ F9 ─ Agent ─ Shell · F8 ──────────────── weather (claude) [feat/x] [Idle] ╮
-after  ╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ── weather (claude) [feat/x] [Idle] ╮
+before ┏ ◀ F9 ━ Agent ━ Shell · F8 ━━━━━━━━━━━━━━━━ ▸ weather (claude) [feat/x] [Idle] ┓
+after  ┏ ◀ F9 ━ Agent ━ Shell · F8 ━ Review · F7 ━ ▸ weather (claude) [feat/x] [Idle] ┓
 ```
+
+## Focus
+
+The pane says whether it has the keys the way every thurbox v2.35 pane does, on
+all three tabs and in every state the review has:
+
+| cue | focused | unfocused | survives no colour |
+|---|---|---|---|
+| border glyphs | thick `┏━┓┃`, and `━` between the chips | thin, rounded `╭─╮│` | yes |
+| title | ` ▸ Title `, bold, on a filled badge | ` Title `, plain | yes |
+| colour | `border_focused` | `border_unfocused` | no |
+| terminal cursor | painted (Agent, Shell) | not painted | yes |
+
+The Review tab's title badge is the range under review (` ▸ main..HEAD `), as
+the Agent tab's is the session. The tab chips say which **view** is up, not which
+pane has the keys, so the active one is the neutral selection pair and the others
+are muted text — never the badge's fill. The rule between the file list and the
+diff is thin and quiet in both states: it splits the pane, it does not frame one.
+
+Every colour is a theme role, so all 36 palettes restyle it. Below thurbox v2.35
+the pane keeps that release's rounded, unmarked frame rather than failing.
 
 ## Install
 
-1. **Check the thurbox version.** It needs **v2.24.0 or later**; CI tests
-   v2.25.0.
+1. **Check the thurbox version.** It needs **v2.35.0 or later**; CI tests
+   v2.35.2. Older releases back to v2.25.0 still load it and draw it, just
+   without v2.35's focus frame (see [Focus](#focus)).
 
    ```bash
    thurbox-cli version
    ```
 
    ```text
-   thurbox 2.25.0
+   thurbox 2.35.2
    ```
 
 2. **Install the plugin.** This clones the repository into your interface
@@ -168,7 +190,7 @@ again).
   [Upgrading from v0.1.0](#upgrading-from-v010-the-standalone-review-pane).
 - no `agent` at all — this pane is off. Do step 5. A load error shows on its row
   in the Interface tab, and in `thurbox-cli plugin list`.
-- an older thurbox — `thurbox-cli version` below 2.24.0. Upgrade thurbox.
+- an older thurbox — `thurbox-cli version` below 2.25.0. Upgrade thurbox.
 - `agent`, and still no Review chip — thurbox's `code_review = false` under
   `[features]` turns the tab off, the way `shell_pane = false` turns off Shell.
 
@@ -286,25 +308,24 @@ otherwise:
 
 ## The fork, and keeping it current
 
-`plugins/20_agent.lua` is thurbox's agent pane with a Review tab added, and its
-history is built so an upstream change to the pane is a merge:
+`plugins/20_agent.lua` is thurbox's agent pane with a Review tab added, kept so
+an upstream change to the pane is a merge. Every line the fork adds or alters
+carries `review tab:`, and the table the pane returns is upstream's line for line
+— the review's keys, settings and capability are appended after it. The file is
+vendored from the release its header names (v2.35.2 today).
 
-- one commit, `chore(agent): vendor thurbox v2.25.0's ui/plugins/20_agent.lua
-  unchanged`, is the file exactly as shipped (it has not changed upstream since
-  v2.19.0);
-- the next commit is the whole fork. Every line it adds or alters carries
-  `review tab:`, and the table the pane returns is upstream's line for line — the
-  review's keys, settings and capability are appended after it.
-
-When a thurbox release changes `ui/plugins/20_agent.lua`:
+When a thurbox release changes `ui/plugins/20_agent.lua`, merge it three ways:
+the release the fork is vendored from is the base, the new release is theirs.
+Pull requests are squash-merged, so there is no vendor commit in `main`'s history
+for `git merge` to find, and `git merge-file` does the same merge on the one file:
 
 ```bash
-# On a branch from the last vendor commit, take the new file as it is…
-git switch -c vendor-vX.Y.Z "$(git log --format=%H -1 --grep='^chore(agent): vendor')"
-git -C /path/to/thurbox show vX.Y.Z:ui/plugins/20_agent.lua > plugins/20_agent.lua
-git commit -am "chore(agent): vendor thurbox vX.Y.Z's ui/plugins/20_agent.lua unchanged"
-# …then merge it, and let the tests say whether Agent and Shell still match.
-git switch main && git merge vendor-vX.Y.Z
+old=v2.35.2 new=vX.Y.Z
+git -C /path/to/thurbox show "$old:ui/plugins/20_agent.lua" > /tmp/base.lua
+git -C /path/to/thurbox show "$new:ui/plugins/20_agent.lua" > /tmp/theirs.lua
+git merge-file -L fork -L "$old" -L "$new" plugins/20_agent.lua /tmp/base.lua /tmp/theirs.lua
+# Resolve what conflicts — the `review tab:` lines are the fork's — and let the
+# tests say whether Agent and Shell still match.
 ```
 
 `tests/agent.lua` loads the pinned tag's pane beside this one and fails if the
@@ -480,7 +501,7 @@ can still be ticked off.
 
 ```bash
 # The Lua tests need thurbox's `ui/` at the tag CI pins. A checkout works, or
-# just the tree: git -C <thurbox> archive v2.25.0 ui thurbox.yml | tar -x -C <dir>
+# just the tree: git -C <thurbox> archive v2.35.2 ui thurbox.yml | tar -x -C <dir>
 export THURBOX_REPO=/path/to/thurbox
 
 selene .                      # the sandbox contract, statically
