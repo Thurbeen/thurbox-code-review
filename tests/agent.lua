@@ -339,8 +339,16 @@ do
 
   local review = chip(tree, "Review") or {}
   eq("the Review chip clicks through its own select action", review.role, "action:terminal.review")
-  eq("styled as an inactive chip, as Shell is", bg_of(chip(tree, "Review")), roles.selection_bg)
-  eq("while Agent is the active one", bg_of(chip(tree, "Agent")), roles.accent)
+  -- A tab says which VIEW is up, which is a different question from which PANE
+  -- has the keys: the active chip is the neutral selection pair, never the
+  -- accent fill the focus badge wears, and an inactive one is plain text.
+  eq("styled as an inactive chip, as Shell is", bg_of(chip(tree, "Review")), nil)
+  eq(
+    "in muted text, as Shell is",
+    (chip(tree, "Review") or {}).style and chip(tree, "Review").style.fg,
+    roles.text_muted
+  )
+  eq("while Agent is the active one", bg_of(chip(tree, "Agent")), roles.selection_bg)
 
   local palette = {}
   for _, entry in ipairs(fork.commands or {}) do
@@ -389,7 +397,7 @@ do
   check("which is not another pane: nothing else is focused", last.kind == "focus")
 
   local tree = fork.render(WIDE)
-  eq("the Review chip is lit", bg_of(chip(tree, "Review")), roles.accent)
+  eq("the Review chip is lit", bg_of(chip(tree, "Review")), roles.selection_bg)
   check("the body is the diff", has_body(tree))
   eq("and no terminal is painted, so no key can reach one", #terminals(tree), 0)
   check("the title names what is reviewed", title_of(tree):find("main..HEAD", 1, true) ~= nil)
@@ -657,6 +665,19 @@ do
     ["the shell chord"] = function(p)
       return p.on_action("shell.open")
     end,
+    -- The search strip landing on a hit in the scrollback, and letting it go.
+    ["a search landing in the shell"] = function(p)
+      store_backing["terminal.reveal"] = "s1#shell 1 4"
+      local answer = p.on_action("terminal.reveal")
+      store_backing["terminal.reveal"] = nil
+      return answer
+    end,
+    ["a search reset"] = function(p)
+      store_backing["terminal.reveal"] = "-s1"
+      local answer = p.on_action("terminal.reveal")
+      store_backing["terminal.reveal"] = nil
+      return answer
+    end,
   }
   for _, tab in ipairs({ "agent", "shell" }) do
     for name, call in pairs(calls) do
@@ -782,6 +803,284 @@ do
   local tree = fork.render(WIDE)
   check("with the shell off instead, Review stays", chip(tree, "Review") ~= nil)
   eq("and Shell goes", chip(tree, "Shell"), nil)
+end
+
+-- ── the focus language ──────────────────────────────────────────────────────
+--
+-- thurbox v2.35 says which pane has the keys three ways at once: thick `┏━┓┃`
+-- borders against thin rounded ones, a ` ▸ ` mark on a bold filled title badge,
+-- and the `border_focused` / `border_unfocused` roles. The first two survive a
+-- palette with no colour in it, which is why the colour-stripped palette below
+-- is asked the same questions.
+
+--- Every role the same colour: what a monochrome terminal is left with.
+local mono = {}
+for name in pairs(roles) do
+  mono[name] = "#808080"
+end
+
+--- The title's runs as a list, whatever shape the frame carries it in.
+local function title_runs(tree)
+  local title = tree.frame and tree.frame.title
+  return type(title) == "table" and title or {}
+end
+
+--- The run carrying the title's words: the first one that is not padding.
+local function badge_of(tree)
+  for _, run in ipairs(title_runs(tree)) do
+    if (run.text or ""):match("%S") then
+      return run
+    end
+  end
+  return nil
+end
+
+--- The strip's filler runs: border cells between chips, all rule glyphs.
+local function fillers(tree)
+  local out = {}
+  for _, run in ipairs((tree.frame and tree.frame.overlay and tree.frame.overlay.top_left) or {}) do
+    if not run.role and run.text:match("^[─━]+$") then
+      out[#out + 1] = run.text
+    end
+  end
+  return out
+end
+
+--- The review body's divider between the file list and the diff: a column of
+--- `│` cells, one per row.
+local function divider_of(tree)
+  local found
+  walk(tree, function(item)
+    if not found and item.type == "text" and item.len == 1 and type(item.text) == "table" then
+      local first = item.text[1] and item.text[1][1]
+      if first and first.text == "│" then
+        found = first
+      end
+    end
+  end)
+  return found
+end
+
+--- One way onto each thing the pane draws with a session selected.
+local VIEWS = {
+  { name = "Agent" },
+  { name = "Shell", tab = "shell" },
+  { name = "Review", tab = "review" },
+  {
+    name = "Review, building",
+    tab = "review",
+    prepare = function()
+      thurbox.diffs = { s1 = { state = "pending" } }
+    end,
+  },
+  {
+    name = "Review, failed",
+    tab = "review",
+    prepare = function()
+      thurbox.diffs = { s1 = { state = "failed", error = "no such ref" } }
+    end,
+  },
+  {
+    name = "Review, no changes",
+    tab = "review",
+    prepare = function()
+      thurbox.diffs = { s1 = { state = "ready", files = {}, body = {} } }
+    end,
+  },
+  {
+    name = "Review, drawn under the guard",
+    tab = "review",
+    broken = true,
+  },
+}
+
+local function draw(view, palette, focused)
+  reset(fork)
+  thurbox.theme.roles = palette
+  if view.tab then
+    state_backing["tab:s1"] = view.tab
+  end
+  if view.prepare then
+    view.prepare()
+  end
+  local review = require("thurbox-code-review.lib.review")
+  local real = review.render
+  if view.broken then
+    review.render = function()
+      error("boom")
+    end
+  end
+  local ok, tree = pcall(fork.render, at(120, focused))
+  review.render = real
+  thurbox.theme.roles = roles
+  assert(ok, tostring(tree))
+  return tree
+end
+
+print("== every view wears the focus language ==")
+do
+  for _, view in ipairs(VIEWS) do
+    local on, off = draw(view, roles, true), draw(view, roles, false)
+    local label = view.name
+
+    eq(label .. ", focused: a thick border", on.frame.border_type, "thick")
+    eq(label .. ", focused: in border_focused", on.frame.border_style.fg, roles.border_focused)
+    check(label .. ", focused: bold", on.frame.border_style.bold == true)
+    local badge = badge_of(on) or {}
+    check(
+      label .. ", focused: the title opens with the mark",
+      (badge.text or ""):match("^ ▸ ") ~= nil,
+      title_of(on)
+    )
+    local badge_style = badge.style or {}
+    check(
+      label .. ", focused: on the badge, bold on border_focused",
+      badge_style.bold == true and badge_style.bg == roles.border_focused,
+      tostring(badge_style.bg)
+    )
+    for _, glyph in ipairs(fillers(on)) do
+      check(
+        label .. ", focused: the strip is drawn in the thick rule",
+        not glyph:find("─"),
+        glyph
+      )
+    end
+
+    eq(label .. ", unfocused: a thin rounded border", off.frame.border_type, "rounded")
+    eq(
+      label .. ", unfocused: in border_unfocused",
+      off.frame.border_style.fg,
+      roles.border_unfocused
+    )
+    check(label .. ", unfocused: no mark", not title_of(off):find("▸", 1, true), title_of(off))
+    local quiet = badge_of(off) or {}
+    check(
+      label .. ", unfocused: a plain title",
+      not (quiet.style or {}).bold and not (quiet.style or {}).bg,
+      title_of(off)
+    )
+    for _, glyph in ipairs(fillers(off)) do
+      check(
+        label .. ", unfocused: the strip is drawn in the thin rule",
+        not glyph:find("━"),
+        glyph
+      )
+    end
+
+    -- The tabs say which view is up, whether or not the pane has the keys.
+    local ok, where = same(chips_of(on), chips_of(off))
+    check(label .. ": the tab chips do not change with focus", ok, where)
+    for _, run in ipairs(chips_of(on)) do
+      local bg = run.style and run.style.bg
+      check(
+        label .. ": the " .. run.text:match("%S+") .. " chip is not a focus badge",
+        bg ~= roles.border_focused and bg ~= roles.accent,
+        tostring(bg)
+      )
+    end
+  end
+end
+
+print("== the cues that survive a palette with no colour ==")
+do
+  for _, view in ipairs(VIEWS) do
+    local on, off = draw(view, mono, true), draw(view, mono, false)
+    check(
+      view.name .. ": the border's shape still differs",
+      on.frame.border_type ~= off.frame.border_type,
+      tostring(on.frame.border_type)
+    )
+    check(
+      view.name .. ": the mark is still on the focused title only",
+      title_of(on):find("▸", 1, true) and not title_of(off):find("▸", 1, true),
+      title_of(on) .. " / " .. title_of(off)
+    )
+  end
+end
+
+print("== the review's inner split is not a second focus frame ==")
+do
+  local view = { name = "Review", tab = "review" }
+  for _, focused in ipairs({ true, false }) do
+    local split = divider_of(draw(view, roles, focused))
+    local label = focused and "focused" or "unfocused"
+    check(label .. ": the file list and the diff are split", split ~= nil)
+    if split then
+      eq(label .. ": by a quiet rule", split.style and split.style.fg, roles.border_unfocused)
+      check(label .. ": never bold", not (split.style and split.style.bold))
+    end
+  end
+end
+
+print("== colours are theme roles ==")
+do
+  for _, file in ipairs({
+    "plugins/20_agent.lua",
+    "lib/review.lua",
+    "lib/rows.lua",
+    "lib/syntax.lua",
+    "lib/chrome.lua",
+  }) do
+    local handle = io.open(REPO .. "/" .. file)
+    local source = handle and handle:read("a") or ""
+    if handle then
+      handle:close()
+    end
+    check(file .. " names no hex colour", not source:find('"#%x%x%x%x%x%x"'))
+  end
+end
+
+print("== below thurbox v2.35 the pane keeps the old look instead of failing ==")
+do
+  -- Before v2.35 `lib/chrome` has no `level`, `border_type`, `rule`, `label`,
+  -- `frame` or `MARK`, and the kernel refuses `border_type = "thick"`. So the
+  -- pane is loaded fresh against a chrome with only the older names.
+  local real = require("lib.chrome")
+  local legacy = {
+    border_style = real.border_style,
+    title_style = real.title_style,
+    spans_len = real.spans_len,
+    SQUARE = real.SQUARE,
+  }
+  local held = {}
+  for name, value in pairs(loaded) do
+    held[name] = value
+  end
+  for name in pairs(held) do
+    if name == "lib.chrome" or name:match("^thurbox%-code%-review%.") then
+      loaded[name] = nil
+    end
+  end
+  loaded["lib.chrome"] = legacy
+  local old = assert(loadfile(REPO .. "/plugins/20_agent.lua"))()
+
+  for _, tab in ipairs({ "agent", "review" }) do
+    for _, focused in ipairs({ true, false }) do
+      reset(old)
+      if tab ~= "agent" then
+        state_backing["tab:s1"] = tab
+      end
+      local label = tab .. (focused and ", focused" or ", unfocused")
+      local ok, tree = pcall(old.render, at(120, focused))
+      check(label .. ": renders", ok, tostring(tree))
+      if ok then
+        check(
+          label .. ": in a border an older kernel accepts",
+          tree.frame.border_type == nil or tree.frame.border_type == "rounded",
+          tostring(tree.frame.border_type)
+        )
+        check(label .. ": with no mark", not title_of(tree):find("▸", 1, true), title_of(tree))
+      end
+    end
+  end
+  reset(old, "nope")
+  local ok, empty = pcall(old.render, WIDE)
+  check("with no session: renders", ok, tostring(empty))
+
+  clear(loaded)
+  for name, value in pairs(held) do
+    loaded[name] = value
+  end
 end
 
 print(string.format("\n%d checks, %d failures", count, failures))
