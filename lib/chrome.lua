@@ -11,7 +11,9 @@
 -- be loaded there, and it must draw rather than fail. On a thurbox that has them
 -- this module IS `lib/chrome`; on one that does not, it is `lib/chrome` with
 -- the missing names filled in by the look that release's own panes have — the
--- rounded border, accented while unfocused, and an unmarked title.
+-- rounded border, accented while unfocused, and an unmarked title. The one
+-- difference: the focused empty pane is that rounded frame too, where the older
+-- release drew a square, muted one whatever the focus.
 --
 -- The agent pane requires this in place of `lib.chrome` and is otherwise
 -- upstream's line for line, so the next upstream change is still a merge.

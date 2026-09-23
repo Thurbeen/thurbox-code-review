@@ -46,7 +46,10 @@ unset THURBOX_CONFIG_DIR THURBOX_DATA_DIR THURBOX_UI_DIR THURBOX_SOCKET THURBOX_
   THURBOX_SESSION THURBOX_SESSION_ID
 S=$("$REPO/demo/sandbox.sh" 2>/dev/null)
 export TMUX_TMPDIR="$S/tmux"
-TM=(tmux -L focus-proof)
+# `-f /dev/null`: the test server is not the user's, so it runs none of their
+# tmux config or plugins, which could write outside the sandbox or change what
+# a capture holds.
+TM=(tmux -f /dev/null -L focus-proof)
 cleanup() {
   "${TM[@]}" kill-server 2>/dev/null || true
   tmux -L thurbox kill-server 2>/dev/null || true
@@ -95,11 +98,11 @@ checks=0
 expect() { # expect <label> <agent: focused|unfocused> <tab: agent|review>
   local label=$1 want=$2 tab=$3 verdict
   checks=$((checks + 1))
-  verdict=$(capture | python3 -c '
+  verdict=$(capture | python3 2>/dev/null -c '
 import sys
 want, tab = sys.argv[1], sys.argv[2]
 lines = sys.stdin.read().split("\n")
-top = next(i for i, line in enumerate(lines) if line[:1] in "╭┏")
+top = next(i for i, line in enumerate(lines) if line[:1] and line[:1] in "╭┏")
 row = lines[top]
 split = min(i for i, ch in enumerate(row) if ch in "╮┓") + 1
 sessions, agent = row[:split], row[split:]
@@ -122,7 +125,7 @@ if tab == "agent" and cursor != focused:
 if tab == "review" and cursor:
     problems.append("cursor painted over the review")
 print("; ".join(problems) or "ok")
-' "$want" "$tab")
+' "$want" "$tab") || verdict="the screen is not the two panes"
   if [ "$verdict" = ok ]; then
     printf '  ok   %s\n' "$label"
   else
@@ -179,10 +182,16 @@ for theme in $THEMES; do
   echo "== $theme =="
   pin_theme "$theme"
   "${TM[@]}" new-session -d -x "$COLS" -y "$ROWS" "$S/run.sh"
+  booted=
   for _ in $(seq 1 60); do
-    capture 2>/dev/null | grep -q 'cache-expiry' && break
+    capture 2>/dev/null | grep -q 'cache-expiry' && booted=1 && break
     sleep 0.5
   done
+  [ -n "$booted" ] || {
+    capture >&2 || true
+    echo "$theme: thurbox never showed the session" >&2
+    exit 1
+  }
   sleep 2
 
   # Boot focus is the agent pane.

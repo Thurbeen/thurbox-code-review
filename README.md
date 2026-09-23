@@ -9,7 +9,7 @@ own on `Ctrl+H` / `Ctrl+L`.
 ![The Review tab beside Agent and Shell: F8 and F7 switch tabs, Ctrl+H and Ctrl+L walk past it, two notes are written and sent to the agent](media/demo.gif)
 
 ```text
-╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ──────────────────── main..HEAD  +8 -4 ╮
+╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ───────────────────── main..HEAD +8 -4 ╮
 │docs/                 │ ▾D docs/old.md  +0 -1                                   │
 │   D old.md +0 -1     │@@ -1 +0,0 @@                                            │
 │   R renamed.md +1 -0 │ 1   - to be deleted                                     │
@@ -69,6 +69,16 @@ diff is thin and quiet in both states: it splits the pane, it does not frame one
 
 Every colour is a theme role, so all 36 palettes restyle it. Below thurbox v2.35
 the pane keeps that release's rounded, unmarked frame rather than failing.
+
+`media/focus/` has the renders, from `STILLS=<dir> tests/focus-proof.sh` run on
+the release before this change and on this one, two by two: the top row is
+before, the bottom row after; the left column has the agent pane focused, the
+right the session list. One image per theme (`default`, the light
+`github-light`, the low-contrast `zenburn`, the high-contrast `oxocarbon`), the
+Review tab in `default-review.png`, and each `-mono` copy with the colour
+stripped.
+
+![default](media/focus/default.png)
 
 ## Install
 

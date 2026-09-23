@@ -981,6 +981,27 @@ do
   end
 end
 
+print("== a title cut short for the strip keeps its mark ==")
+do
+  -- The Agent tab truncates its title and keeps ` ▸ `; the Review tab's range is
+  -- its badge, and it must not vanish where the Agent tab's is still drawn.
+  for _, width in ipairs({ 50, 56, 60, 70 }) do
+    reset(fork)
+    local agent = fork.render(at(width))
+    state_backing["tab:s1"] = "review"
+    local review = fork.render(at(width))
+    if title_of(agent):find("▸", 1, true) then
+      check(
+        "at " .. width .. " columns the Review title keeps the mark too",
+        title_of(review):find("▸", 1, true) ~= nil,
+        "[" .. title_of(review) .. "]"
+      )
+      local used = utf8.len(strip_of(review)) + utf8.len(title_of(review))
+      check("at " .. width .. " columns it still leaves the strip alone", used <= width - 2, used)
+    end
+  end
+end
+
 print("== the cues that survive a palette with no colour ==")
 do
   for _, view in ipairs(VIEWS) do

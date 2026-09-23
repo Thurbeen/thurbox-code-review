@@ -516,9 +516,10 @@ end
 --- The right-aligned title, fitted against the tab strip on the same border.
 ---
 --- The title is runs — the range's badge, then the counts — and it loses from
---- the right: the counts go before the range does, and the whole title before
---- it would run into a chip. The strip is the way between tabs; the title is
---- only a report.
+--- the right: the counts go first, then the badge's tail. The badge is cut
+--- rather than dropped, so a narrow pane keeps the ` ▸ ` that says it has the
+--- keys, as the Agent tab's title does. The strip is the way between tabs; the
+--- title is only a report.
 local function fit_title(runs, width, reserved)
   local available = math.max(0, width - 2 - reserved - 1)
   local function measure()
@@ -532,7 +533,11 @@ local function fit_title(runs, width, reserved)
     table.remove(runs)
   end
   if measure() > available then
-    return {}
+    if available <= 0 then
+      return {}
+    end
+    local badge = runs[1]
+    return { { text = widgets.truncate_hard(badge.text, available), style = badge.style } }
   end
   return runs
 end
