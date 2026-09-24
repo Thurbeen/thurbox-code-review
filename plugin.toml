@@ -31,14 +31,17 @@
 # names the choices it cannot serve rather than hiding them. See the README.
 name = "code-review"
 description = "thurbox's agent pane with a Review tab: a session's diff, reviewable beside its terminal"
-version = "v0.2.0"
+version = "v0.3.0"
 
-# The agent pane is vendored from thurbox v2.25.0, where that file is unchanged
-# since v2.19.0; CI tests v2.25.0, and it installs and loads on v2.24.0 and
-# v2.24.1, whose agent pane and review-relevant interface are the same. The
-# review needs `store.selected`-driven
-# diffs with `base_branch` on the session row, a file list built independently of
-# the capped body, frame overlays, and `run` with `thurbox.runs`.
-requires_thurbox = ">=2.24.0"
+# The agent pane is vendored from thurbox v2.35.2, and CI tests v2.35.2. v2.35 is
+# the floor for its LOOK: that release's focus language (a thick, marked frame on
+# the focused pane) needs `lib/chrome` names and a `thick` border that do not
+# exist before it. This is advisory — thurbox records it and does not enforce it
+# — so below v2.35 the pane still loads and draws, in the rounded, unmarked frame
+# the older release's own panes have (`lib/chrome.lua`); it has been tested back
+# to v2.25.0. The review needs `store.selected`-driven diffs with `base_branch` on
+# the session row, a file list built independently of the capped body, frame
+# overlays, and `run` with `thurbox.runs`.
+requires_thurbox = ">=2.35.0"
 
 pane = { source = "plugins/20_agent.lua", path = "plugins/20_agent.lua" }

@@ -48,6 +48,8 @@
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
+-- The focus language, the same one the agent pane's other tabs speak.
+local focus = require("thurbox-code-review.lib.chrome")
 local diff = require("thurbox-code-review.lib.diff")
 local rows = require("thurbox-code-review.lib.rows")
 local export = require("thurbox-code-review.lib.export")
@@ -78,7 +80,10 @@ local HSCROLL_STEP = 8
 --- happened to be wrapped, which is the rule above leaking out through a key.
 local PAGE = 10
 
---- The rule between the changed-files list and the diff body.
+--- The rule between the changed-files list and the diff body. Thin and in the
+--- unfocused border role whatever the focus: it splits the pane, it does not
+--- frame one, and a second accented rule inside the focused frame would read as
+--- a second focused pane. The side-by-side body's centre rule is the same.
 local DIVIDER = "│"
 
 -- ── reading the world ───────────────────────────────────────────────────────
@@ -510,10 +515,11 @@ end
 
 --- The right-aligned title, fitted against the tab strip on the same border.
 ---
---- The title is runs — the range, then the counts — and it loses from the
---- right: the counts go before the range does, and the whole title before it
---- would run into a chip. The strip is the way between tabs; the title is only
---- a report.
+--- The title is runs — the range's badge, then the counts — and it loses from
+--- the right: the counts go first, then the badge's tail. The badge is cut
+--- rather than dropped, so a narrow pane keeps the ` ▸ ` that says it has the
+--- keys, as the Agent tab's title does. The strip is the way between tabs; the
+--- title is only a report.
 local function fit_title(runs, width, reserved)
   local available = math.max(0, width - 2 - reserved - 1)
   local function measure()
@@ -523,11 +529,15 @@ local function fit_title(runs, width, reserved)
     end
     return used
   end
-  while measure() > available and #runs > 3 do
-    table.remove(runs, #runs - 1)
+  while measure() > available and #runs > 1 do
+    table.remove(runs)
   end
   if measure() > available then
-    return {}
+    if available <= 0 then
+      return {}
+    end
+    local badge = runs[1]
+    return { { text = widgets.truncate_hard(badge.text, available), style = badge.style } }
   end
   return runs
 end
@@ -1289,11 +1299,14 @@ review.KEYS = {
 
 --- Draw the review for the selected session inside the agent pane's frame.
 ---
---- `chrome` is what the pane puts on the border of every tab: `border`, the
---- border style; `strip`, the tab strip for the top-left; and `reserved`, the
---- column the strip ends at, which the right-aligned title is fitted against.
+--- `chrome` is what the pane puts on the border of every tab: `level`, the focus
+--- level; `border`, the border style; `strip`, the tab strip for the top-left;
+--- and `reserved`, the column the strip ends at, which the right-aligned title is
+--- fitted against. The border's glyphs and the title's badge follow `level`, so
+--- this tab says whether the pane has the keys exactly as Agent and Shell do.
 function review.render(ctx, chrome)
   local width, height = ctx.width or 0, ctx.height or 0
+  local level = chrome.level or focus.level(ctx.focused)
   local edge = chrome.border
   local session = selected()
 
@@ -1302,6 +1315,7 @@ function review.render(ctx, chrome)
     body.frame = {
       title = fit_title(opts.right or {}, width, chrome.reserved or 0),
       title_align = "right",
+      border_type = focus.border_type(level),
       border_style = edge,
       overlay = {
         top_left = chrome.strip,
@@ -1333,11 +1347,10 @@ function review.render(ctx, chrome)
   -- picker, and a header that kept saying `main..HEAD` over one commit's diff
   -- would be the pane lying about the only thing it exists to show.
   local range = target.label(here, session, target.known_commits(session))
-  local range_runs = {
-    { text = " ", style = edge },
-    { text = range, style = { fg = theme.branch } },
-    { text = " ", style = edge },
-  }
+  -- The title's badge is the range, as the session is on the Agent tab: marked
+  -- and filled while the pane has the keys, plain while it does not.
+  local badge = { text = focus.label(range, level), style = focus.title_style(level) }
+  local range_runs = { badge }
 
   -- The picker outranks every diff state below, including "still building":
   -- it is how you leave a target that is slow, or that failed, and a picker
@@ -1526,7 +1539,7 @@ function review.render(ctx, chrome)
       text = (function()
         local column = {}
         for row = 1, body_h do
-          column[row] = { { text = DIVIDER, style = edge } }
+          column[row] = { { text = DIVIDER, style = { fg = theme.border } } }
         end
         return column
       end)(),
@@ -1588,20 +1601,17 @@ function review.render(ctx, chrome)
   local right = range_runs
   if not parse.done then
     right = {
-      { text = " ", style = edge },
+      badge,
       {
-        text = "reading " .. math.floor(diff.progress(parse) * 100) .. "%",
+        text = "reading " .. math.floor(diff.progress(parse) * 100) .. "% ",
         style = { fg = theme.warn },
       },
-      { text = " ", style = edge },
     }
   else
     right = {
-      { text = " ", style = edge },
-      { text = range, style = { fg = theme.branch } },
-      { text = "  +" .. added, style = { fg = theme.role("diff_added") } },
-      { text = " -" .. removed, style = { fg = theme.role("diff_removed") } },
-      { text = " ", style = edge },
+      badge,
+      { text = "+" .. added .. " ", style = { fg = theme.role("diff_added") } },
+      { text = "-" .. removed .. " ", style = { fg = theme.role("diff_removed") } },
     }
   end
 

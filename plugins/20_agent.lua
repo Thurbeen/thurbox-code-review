@@ -1,9 +1,10 @@
 -- thurbox-code-review's agent pane: thurbox's own, with a Review tab.
 --
--- review tab: vendored from thurbox v2.25.0 `ui/plugins/20_agent.lua`
--- (unchanged upstream since v2.19.0) in the commit before the fork, so an
--- upstream change to the pane is a git merge. Every line this fork adds or
--- alters says `review tab:`, and the review itself is `lib/review.lua`.
+-- review tab: vendored from thurbox v2.35.2 `ui/plugins/20_agent.lua`, merged
+-- three ways onto the fork of v2.25.0 (see the README's "The fork, and keeping
+-- it current"), so an upstream change to the pane is a merge. Every line this
+-- fork adds or alters says `review tab:`, and the review itself is
+-- `lib/review.lua`.
 --
 -- The central terminal pane: the agent's terminal and a shell, as two TABS of
 -- one pane.
@@ -27,13 +28,15 @@
 --
 -- The chrome here is an ordinary kernel `frame`. It was drawn by hand for as
 -- long as a frame could not express the three things v1's terminal pane needs:
--- a RIGHT-aligned border title, a STYLED one (the focused badge is
--- inverted_fg-on-accent), and a scrollbar overlaid on the right border column
+-- a RIGHT-aligned border title, a STYLED one (the focused badge is inverted_fg
+-- on the focused border colour), and a scrollbar overlaid on the right border column
 -- so it costs zero content columns. `title_align`, styled title runs and
 -- `frame.overlay` are each of those, so the border is one table again and the
 -- surface keeps the whole inner rect.
 
-local chrome = require("lib.chrome")
+-- review tab: `lib.chrome`, or on a thurbox older than v2.35 the look that
+-- release's panes have, so the pane draws there instead of failing.
+local chrome = require("thurbox-code-review.lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
 local plugin_settings = require("lib.settings")
@@ -82,6 +85,13 @@ local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
 local SCROLL_LINES = 10
 --- Bring the input focus onto this pane, from anywhere.
 local FOCUS = "terminal.focus"
+--- Scroll a terminal to where another pane asks — the search strip landing on a
+--- hit it found in the scrollback. The request is left in `store` under the
+--- same name, because an action carries no argument: `"<surface> <offset>
+--- <row>"` scrolls back by `offset` and marks screen row `row` (from the top),
+--- `"-<surface>"` puts that terminal back at the bottom, and several are
+--- `;`-separated.
+local REVEAL = "terminal.reveal"
 
 --- The session the list published, resolved against the current snapshot.
 local function selected()
@@ -149,6 +159,14 @@ local function set_scroll(surface, scroll, scroll_max)
   end
   state["scroll:" .. surface] = scroll ~= 0 and scroll or nil
   state["scrollmax:" .. surface] = scroll_max ~= 0 and scroll_max or nil
+  -- Any move by hand leaves the line a search landed on; its mark goes with it.
+  state["mark:" .. surface] = nil
+end
+
+--- The screen row a search landed this surface on, from the top — see
+--- `reveal`. Drawn as the surface's `mark` until the view moves.
+local function mark_of(surface)
+  return surface and state["mark:" .. surface] or nil
 end
 
 --- Move a surface's scrollback by `lines`. `true` when it actually moved.
@@ -189,6 +207,39 @@ local function scroll_by(id, lines)
   -- handing a PageDown at the live bottom back to the kernel would offer it to
   -- the pty this action exists to keep it away from.
   return true
+end
+
+--- Apply the scroll requests `store[REVEAL]` carries.
+---
+--- A request selects the tab its surface is on, so a hit in the companion shell
+--- is shown in the shell, and a reset puts the agent tab back. Focus does not
+--- move, so the search strip can preview through this and keep the keyboard.
+local function reveal()
+  local spec = store[REVEAL]
+  if type(spec) ~= "string" then
+    return
+  end
+  for request in spec:gmatch("[^;]+") do
+    local reset, surface, offset, row = request:match("^(%-?)(%S+)%s*(%d*)%s*(%d*)$")
+    if surface then
+      local id = surface:gsub("#shell$", "")
+      local shell = id ~= surface
+      local _, scroll_max = scroll_of(surface)
+      if reset == "-" then
+        set_scroll(surface, 0, scroll_max)
+        if shell then
+          set_tab(id, AGENT_TAB)
+        end
+      elseif not shell or shell_enabled() then
+        -- The surface node's `scroll` is 16 bits; a scrollback configured past
+        -- that is reached as far as it can be rather than failing the render.
+        local scroll = math.min(tonumber(offset) or 0, 65535)
+        set_tab(id, shell and SHELL_TAB or AGENT_TAB)
+        set_scroll(surface, scroll, math.max(scroll_max, scroll))
+        state["mark:" .. surface] = tonumber(row)
+      end
+    end
+  end
 end
 
 --- Put the view back at the live bottom of the stream.
@@ -298,11 +349,12 @@ end
 
 -- --- focus -----------------------------------------------------------------
 --
--- v1 has THREE levels (`ui::FocusLevel`); this pane's caller only ever produces
--- two, so `inactive` is carried for completeness rather than reached. Focus is
--- communicated by COLOUR, never by a marker glyph or a heavier border — which
--- is why nothing below prefixes the title. The mapping itself is
--- `chrome.border_style` / `chrome.title_style`, shared with the session list.
+-- `lib/chrome`'s convention, shared with every other framed pane: thick and
+-- marked (` ▸ `) with focus, thin and quiet without. This pane assembles its own
+-- frame — the tab strip and the scrollbar ride its border — so it asks chrome
+-- for each part (`level`, `border_type`, `rule`, `label`, the two styles)
+-- rather than for a whole `chrome.frame`. The other half of its focus cue is
+-- the kernel's: the terminal paints its cursor only while this pane has focus.
 
 -- --- the scrollbar ---------------------------------------------------------
 
@@ -538,13 +590,18 @@ local function shortcut_for(action)
   return found
 end
 
---- v1 `button_style`: the active view is the accent-filled "primary" chip, the
---- rest the neutral selection pair every palette guarantees is legible.
+--- The active view is a filled chip in the neutral selection pair every
+--- palette guarantees is legible; the others are plain muted text.
+---
+--- v1 filled the active chip with the accent, which is the focus badge's own
+--- look — so the pane's border carried a second "focused" badge whether it had
+--- focus or not, a few columns from the real one. A tab says which VIEW is up,
+--- which is a different question from which PANE has the keys.
 local function chip_style(primary)
   if primary then
-    return { fg = theme.role("inverted_fg"), bg = theme.role("accent"), bold = true }
+    return { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
   end
-  return { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+  return { fg = theme.role("text_muted") }
 end
 
 --- The hovered chip.
@@ -671,7 +728,7 @@ end
 ---
 --- Columns are pane-local and 0-based: the corner sits at 0 and the strip starts
 --- at 1, exactly where v1 puts the chevron rect (`terminal.x + 1`).
-local function border_strip(width, border_style, active)
+local function border_strip(width, border_style, active, rule)
   local runs, cursor = {}, 1
   --- `role`, when given, is the kernel's click verb for this run: a run carries
   --- its own identity and the paint walk registers a hitbox over the columns it
@@ -679,7 +736,7 @@ local function border_strip(width, border_style, active)
   --- the column it belongs at, since the overlay paints its runs consecutively.
   local function put(at, text, style, role)
     if at > cursor then
-      runs[#runs + 1] = { text = string.rep("─", at - cursor), style = border_style }
+      runs[#runs + 1] = { text = string.rep(rule, at - cursor), style = border_style }
     end
     runs[#runs + 1] = { text = text, style = style, role = role }
     cursor = at + widgets.len(text)
@@ -750,6 +807,7 @@ local function border_frame(title, level, border, strip, bar)
   return {
     title = { { text = title, style = chrome.title_style(level) } },
     title_align = "right",
+    border_type = chrome.border_type(level),
     border_style = border,
     overlay = { top_left = strip, right_column = bar },
   }
@@ -859,8 +917,11 @@ end
 --- would otherwise blank the Agent and Shell tabs with it. The error is drawn
 --- inside the frame instead, under the strip that is the way back.
 local function review_tab(ctx, session, level, border, strip, reserved_left)
-  local ok, body =
-    pcall(review.render, ctx, { border = border, strip = strip, reserved = reserved_left })
+  local ok, body = pcall(
+    review.render,
+    ctx,
+    { level = level, border = border, strip = strip, reserved = reserved_left }
+  )
   if ok then
     return body
   end
@@ -869,7 +930,11 @@ local function review_tab(ctx, session, level, border, strip, reserved_left)
     { { text = tostring(body), style = { fg = theme.muted } } },
   })
   failed.frame = border_frame(
-    fit_right_title(" " .. (session.name or "") .. " (review) ", ctx.width or 0, reserved_left),
+    fit_right_title(
+      chrome.label((session.name or "") .. " (review)", level),
+      ctx.width or 0,
+      reserved_left
+    ),
     level,
     border,
     strip
@@ -977,19 +1042,25 @@ local pane = {
 
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
-    local level = ctx.focused and "focused" or "active"
+    local level = chrome.level(ctx.focused)
     local border = chrome.border_style(level)
     local session = selected()
 
     -- No session: v1 switches to a different frame entirely — SQUARE borders,
-    -- a muted left-aligned " No Session " title, and the hint box.
+    -- a muted left-aligned " No Session " title, and the hint box. Focused, it
+    -- wears the one focus frame instead: this is the pane holding focus at boot
+    -- on a fresh install, and a muted square said nothing about that.
     if not session then
       local body = empty_body(math.max(0, width - 2), math.max(0, height - 2))
-      body.frame = {
-        title = { { text = " No Session " } },
-        border_type = "square",
-        border_style = { fg = theme.muted },
-      }
+      if ctx.focused then
+        body.frame = chrome.frame("No Session", level)
+      else
+        body.frame = {
+          title = { { text = " No Session " } },
+          border_type = "square",
+          border_style = { fg = theme.muted },
+        }
+      end
       return body
     end
 
@@ -998,7 +1069,7 @@ local pane = {
     -- It carries the active tab, so it is the SAME strip on every tab; that is
     -- the whole reason the views share one plugin.
     local tab = tab_of(session.id)
-    local strip, reserved_left = border_strip(width, border, tab)
+    local strip, reserved_left = border_strip(width, border, tab, chrome.rule(level))
     -- review tab: the diff, inside the same frame, under the same strip.
     if tab == REVIEW_TAB then
       return review_tab(ctx, session, level, border, strip, reserved_left)
@@ -1008,11 +1079,11 @@ local pane = {
     -- set on the parser it draws.
     local surface = surface_of(session.id, tab)
     local scroll, depth = scroll_of(surface)
-    local title = fit_right_title(
-      terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll }),
-      width,
-      reserved_left
-    )
+    -- Marked before it is fitted, so a title cut short for the strip loses
+    -- its tail and never the mark that says this pane has the keys.
+    local base = terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll })
+    local title =
+      fit_right_title(chrome.label(base:match("^%s*(.-)%s*$"), level), width, reserved_left)
 
     -- A dead pane explains itself. "not attached" with no reason is the least
     -- useful thing a terminal can say. v1 has no such state, so this is a
@@ -1044,10 +1115,17 @@ local pane = {
 
     -- The shell is a second surface over the same primitive, addressed as
     -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
+    -- The row a search landed on, while it is still inside the grid.
+    local mark = mark_of(surface)
+    if mark and mark >= height - 2 then
+      mark = nil
+    end
+
     return {
       type = "surface",
       session = surface,
       scroll = scroll,
+      mark = mark,
       fill = 1,
       frame = border_frame(title, level, border, strip, rows),
     }
@@ -1060,6 +1138,7 @@ local pane = {
     { action = FOCUS, desc = "focus the agent terminal" },
     { action = SELECT_AGENT, desc = "show the agent tab" },
     { action = SELECT_SHELL, desc = "show the shell tab" },
+    { action = REVEAL, desc = "scroll back to the last search result" },
   },
 
   -- A wheel tick, which is NOT the page keys above.
@@ -1091,7 +1170,12 @@ local pane = {
     if store.selected and tab_of(store.selected) == REVIEW_TAB then
       return review.on_key(key)
     end
-    snap_to_bottom(store.selected)
+    local id = store.selected
+    snap_to_bottom(id)
+    local surface = surface_of(id, tab_of(id))
+    if surface then
+      state["mark:" .. surface] = nil
+    end
     return false
   end,
 
@@ -1121,6 +1205,10 @@ local pane = {
     end
     if action == SCROLL_DOWN then
       return scroll_by(id, -SCROLL_LINES)
+    end
+    if action == REVEAL then
+      reveal()
+      return true
     end
     if action == FOCUS then
       -- Where `sessions.open` sends focus too: the pane that shows the session.
