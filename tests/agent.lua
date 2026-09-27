@@ -1,4 +1,4 @@
--- The agent pane this plugin ships: Agent / Shell / Review as three tabs of one
+-- The agent pane this plugin ships: Agent / Shell / Review / Doom as one pane
 -- pane, against a faked snapshot.
 --
 -- Two questions, asked of the returned node trees and of the handlers:
@@ -317,9 +317,78 @@ local function at(width, focused)
   return { width = width, height = 30, focused = focused ~= false, elapsed = 0 }
 end
 
--- ── three tabs ──────────────────────────────────────────────────────────────
+-- ── four tabs ───────────────────────────────────────────────────────────────
 
-print("== three tabs render on the border ==")
+print("== Doom joins the agent pane tabs ==")
+do
+  reset(fork)
+  local tree = fork.render(WIDE)
+  local doom = chip(tree, "Doom") or {}
+  eq("Doom is a fourth tab", #chips_of(tree), 4)
+  eq("Doom chip selects its tab", doom.role, "action:terminal.doom")
+  local f5
+  for _, binding in ipairs(fork.keys) do
+    if binding.key == "f5" then
+      f5 = binding
+    end
+  end
+  eq("F5 toggles Doom", f5 and f5.action, "doom.open")
+  eq("F5 is global while a terminal is focused", f5 and f5.scope, "global")
+  check("F5 is handled", fork.on_action("doom.open"))
+  eq("Doom is remembered for this session", state_backing["tab:s1"], "doom")
+  check("Doom uses the agent pane frame", chip(fork.render(WIDE), "Doom") ~= nil)
+  fork.on_action("doom.open")
+  eq("F5 returns to Agent", state_backing["tab:s1"], nil)
+end
+
+print("== Doom only starts after the agent pane has program capability ==")
+do
+  reset(fork)
+  thurbox.ui_dir = "/test/ui"
+  thurbox.platform = { os = "linux", arch = "x86_64" }
+  fork.on_action("doom.open")
+  local unavailable = false
+  walk(fork.render(WIDE), function(item)
+    if item.type == "text" and type(item.text) == "table" then
+      for _, line in ipairs(item.text) do
+        if run_text(line):find("Doom is unavailable", 1, true) then
+          unavailable = true
+        end
+      end
+    end
+  end)
+  check("without the Doom package the tab explains what is missing", unavailable)
+  eq("without the Doom package no program starts", #commands, 1)
+  thurbox.registry.settings = { { plugin = "doom", id = "program", value = "" } }
+  clear(commands)
+  fork.render(WIDE)
+  local started = false
+  for _, issued in ipairs(commands) do
+    if issued.kind == "program" then
+      started = true
+    end
+  end
+  check("without a grant no program starts", not started)
+  clear(commands)
+  thurbox.granted = { program = true }
+  local tree = fork.render(WIDE)
+  local game = false
+  walk(tree, function(item)
+    if item.type == "surface" and item.program == "doom" then
+      game = true
+    end
+  end)
+  check("with a grant Doom asks for its program", commands[1] and commands[1].kind == "program")
+  check("the program surface is inside the agent pane", game)
+  eq("the first session uses one named program", commands[1].args.text, "doom")
+  clear(commands)
+  store_backing.selected = "s2"
+  fork.on_action("doom.open")
+  fork.render(WIDE)
+  eq("another session uses that same program", commands[2].args.text, "doom")
+end
+
+print("== the original three tabs still render on the border ==")
 do
   reset(fork)
   local tree = fork.render(WIDE)
@@ -335,7 +404,7 @@ do
     agent_at and shell_at and review_at and agent_at < shell_at and shell_at < review_at,
     strip
   )
-  eq("three chips", #chips_of(tree), 3)
+  eq("four chips", #chips_of(tree), 4)
 
   local review = chip(tree, "Review") or {}
   eq("the Review chip clicks through its own select action", review.role, "action:terminal.review")
@@ -562,7 +631,7 @@ do
         -- and ` Review · F7 `. Nothing before it moves.
         local got_strip = got.frame.overlay.top_left
         local want_strip = want.frame.overlay.top_left
-        eq(label .. ": two more strip runs", #got_strip, #want_strip + 2)
+        eq(label .. ": four more strip runs", #got_strip, #want_strip + 4)
         local prefix = {}
         for index = 1, #want_strip do
           prefix[index] = got_strip[index]
@@ -579,7 +648,7 @@ do
     end
   end
 
-  -- Narrow, the strip trims differently (three chips, not two), and the title is
+  -- Narrow, the strip trims differently with the added chips, and the title is
   -- fitted against where the strip ends. The pane underneath does not change.
   for _, tab in ipairs({ "agent", "shell" }) do
     local got, want = both(tab, at(50))

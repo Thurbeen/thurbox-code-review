@@ -1,7 +1,7 @@
 # thurbox-code-review
 
-Code review for thurbox's v2 plugin interface, as a third tab of the agent pane:
-**Agent / Shell / Review**. Review shows the diff of a session's worktree against
+Code review for thurbox's v2 plugin interface, as tabs of the agent pane:
+**Agent / Shell / Review / Doom**. Review shows the diff of a session's worktree against
 its base branch, and it behaves exactly as Shell does: the same chip on the same
 strip, a chord that toggles it, a tab remembered per session, and no stop of its
 own on `Ctrl+H` / `Ctrl+L`.
@@ -24,6 +24,31 @@ own on `Ctrl+H` / `Ctrl+L`.
 v1 shipped this natively — 1,844 lines of rendering and 2,610 of state — and it
 was deleted with `src/ui`. This is the plugin that pays it back, and it is the
 first consumer of `thurbox.diffs` anywhere.
+
+## Doom tab
+
+Install [thurbox-doom](https://github.com/Thurbeen/thurbox-doom) alongside this
+plugin to supply the engine, WADs, and `doom.*` settings:
+
+```bash
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-doom
+thurbox-cli plugin check
+```
+
+With a session selected, click **Doom** on the agent pane's strip or press **F5**
+from anywhere. F5 again returns to Agent. The tab is remembered per session, and
+`Ctrl+H` / `Ctrl+L` do not gain another stop. `Ctrl+Alt+R` restarts the game;
+`Ctrl+Alt+X` stops it. Movement and menu keys go to the program surface.
+
+The program starts only when this pane's **program** capability is granted:
+`Ctrl+,` → `]` → `thurbox-code-review/plugins/20_agent.lua` → `t`. The Doom tab
+shows the command and grant instructions until then. This is separate from the
+optional `run` capability for Review. Configure the existing `doom.program`,
+`doom.wad`, `doom.args`, and `doom.footer` fields on the Doom package's row.
+The engine and WAD files remain in that package; they are not copied here.
+If the Doom package is absent, the agent pane still loads and the Doom tab
+explains what to install. The game is one program pane shared across sessions;
+switching sessions keeps that instance, while the selected tab remains per session.
 
 ## What it installs
 
@@ -52,7 +77,7 @@ after  ┏ ◀ F9 ━ Agent ━ Shell · F8 ━ Review · F7 ━ ▸ weather (cl
 ## Focus
 
 The pane says whether it has the keys the way every thurbox v2.35 pane does, on
-all three tabs and in every state the review has:
+all four tabs and in every state the review has:
 
 | cue | focused | unfocused | survives no colour |
 |---|---|---|---|
@@ -139,8 +164,8 @@ stripped.
    a reinstall brings it back **off** — `plugin check` then lists no `agent` at
    all.
 
-6. **Optionally, grant `run`.** Same row, while it is on → `t`. The review works
-   without it: the kernel computes the branch diff (or the working changes, for
+6. **Grant `program` for Doom, and optionally grant `run` for Review.** Same row, while it is on → `t`. The review works
+   without `run`: the kernel computes the branch diff (or the working changes, for
    a session with no base branch). `run` unlocks the other targets of the `t`
    picker — the uncommitted changes of a session that has a base branch, and
    single commits — by running `git` on a worker. Nothing is run until you open
