@@ -44,7 +44,10 @@ local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 -- review tab: the diff, its keys and its settings.
 local review = require("thurbox-code-review.lib.review")
-local doom = require("thurbox-code-review.lib.doom")
+local doom_loaded, doom = pcall(require, "thurbox-doom.lib.doom")
+if not doom_loaded then
+  doom = nil
+end
 
 --- What this plugin is called. Declared once because the pane has to name
 --- ITSELF to bring itself forward (`command("focus", …)`).
@@ -1093,7 +1096,7 @@ local pane = {
     end
     if tab == DOOM_TAB then
       local body
-      if not doom.available() then
+      if not doom or not doom.available() then
         body = centered({
           { { text = "Doom is unavailable", style = { fg = theme.muted, bold = true } } },
           {
@@ -1257,7 +1260,7 @@ local pane = {
       if not id or tab_of(id) ~= DOOM_TAB then
         return false
       end
-      return doom.on_action(action)
+      return doom and doom.on_action(action) or false
     end
     if id and tab_of(id) == DOOM_TAB and (action == SCROLL_UP or action == SCROLL_DOWN) then
       return false

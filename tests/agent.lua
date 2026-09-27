@@ -101,6 +101,11 @@ _G.require = function(name)
   local path
   if name:match("^thurbox%-code%-review%.") then
     path = REPO .. "/" .. name:gsub("^thurbox%-code%-review%.", ""):gsub("%.", "/") .. ".lua"
+  elseif name:match("^thurbox%-doom%.") and os.getenv("THURBOX_DOOM_REPO") then
+    path = os.getenv("THURBOX_DOOM_REPO")
+      .. "/"
+      .. name:gsub("^thurbox%-doom%.", ""):gsub("%.", "/")
+      .. ".lua"
   elseif name:match("^lib%.") then
     path = UI .. "/" .. name:gsub("%.", "/") .. ".lua"
   else
@@ -359,33 +364,35 @@ do
   end)
   check("without the Doom package the tab explains what is missing", unavailable)
   eq("without the Doom package no program starts", #commands, 1)
-  thurbox.registry.settings = { { plugin = "doom", id = "program", value = "" } }
-  clear(commands)
-  fork.render(WIDE)
-  local started = false
-  for _, issued in ipairs(commands) do
-    if issued.kind == "program" then
-      started = true
+  if os.getenv("THURBOX_DOOM_REPO") then
+    thurbox.registry.settings = { { plugin = "doom", id = "program", value = "" } }
+    clear(commands)
+    fork.render(WIDE)
+    local started = false
+    for _, issued in ipairs(commands) do
+      if issued.kind == "program" then
+        started = true
+      end
     end
+    check("without a grant no program starts", not started)
+    clear(commands)
+    thurbox.granted = { program = true }
+    local tree = fork.render(WIDE)
+    local game = false
+    walk(tree, function(item)
+      if item.type == "surface" and item.program == "doom" then
+        game = true
+      end
+    end)
+    check("with a grant Doom asks for its program", commands[1] and commands[1].kind == "program")
+    check("the program surface is inside the agent pane", game)
+    eq("the first session uses one named program", commands[1].args.text, "doom")
+    clear(commands)
+    store_backing.selected = "s2"
+    fork.on_action("doom.open")
+    fork.render(WIDE)
+    eq("another session uses that same program", commands[2].args.text, "doom")
   end
-  check("without a grant no program starts", not started)
-  clear(commands)
-  thurbox.granted = { program = true }
-  local tree = fork.render(WIDE)
-  local game = false
-  walk(tree, function(item)
-    if item.type == "surface" and item.program == "doom" then
-      game = true
-    end
-  end)
-  check("with a grant Doom asks for its program", commands[1] and commands[1].kind == "program")
-  check("the program surface is inside the agent pane", game)
-  eq("the first session uses one named program", commands[1].args.text, "doom")
-  clear(commands)
-  store_backing.selected = "s2"
-  fork.on_action("doom.open")
-  fork.render(WIDE)
-  eq("another session uses that same program", commands[2].args.text, "doom")
 end
 
 print("== the original three tabs still render on the border ==")
