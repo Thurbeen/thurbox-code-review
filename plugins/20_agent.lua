@@ -44,6 +44,10 @@ local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 -- review tab: the diff, its keys and its settings.
 local review = require("thurbox-code-review.lib.review")
+local doom_loaded, doom = pcall(require, "thurbox-doom.lib.doom")
+if not doom_loaded then
+  doom = nil
+end
 
 --- What this plugin is called. Declared once because the pane has to name
 --- ITSELF to bring itself forward (`command("focus", …)`).
@@ -77,6 +81,7 @@ local SELECT_AGENT, SELECT_SHELL = "terminal.agent", "terminal.shell"
 -- review tab: the third view, its idempotent select action (the chip), and the
 -- chord that toggles it the way `shell.open` toggles the shell.
 local REVIEW_TAB, SELECT_REVIEW, OPEN_REVIEW = "review", "terminal.review", "review.open"
+local DOOM_TAB, SELECT_DOOM, OPEN_DOOM = "doom", "terminal.doom", "doom.open"
 --- Scrollback, declared rather than matched inside `on_key`: a key that only
 --- exists there is invisible to help and cannot be rebound.
 local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
@@ -130,7 +135,7 @@ end
 --- anything keyed on it is keyed on the screen the user is actually reading.
 local function surface_of(id, tab)
   -- review tab: no terminal behind it, so nothing to scroll, snap or grab.
-  if not id or tab == REVIEW_TAB then
+  if not id or tab == REVIEW_TAB or tab == DOOM_TAB then
     return nil
   end
   return tab == SHELL_TAB and (id .. "#shell") or id
@@ -663,6 +668,12 @@ local function tab_specs(active)
       role = "action:" .. SELECT_REVIEW,
     }
   end
+  specs[#specs + 1] = {
+    name = "Doom",
+    active = active == DOOM_TAB,
+    shortcut = shortcut_for(OPEN_DOOM),
+    role = "action:" .. SELECT_DOOM,
+  }
   return specs
 end
 
@@ -706,7 +717,7 @@ local function trim_tabs(specs, usable)
     if not stripped then
       local victim
       -- review tab: the rightmost chip goes first.
-      for _, name in ipairs({ "Review", "Shell" }) do
+      for _, name in ipairs({ "Doom", "Review", "Shell" }) do
         for index, spec in ipairs(specs) do
           if not victim and spec.name == name and not spec.active then
             victim = index
@@ -1021,6 +1032,15 @@ local pane = {
       scope = "global",
       group = "UI",
     },
+    {
+      key = "f5",
+      action = OPEN_DOOM,
+      desc = "toggle Doom in the agent pane",
+      scope = "global",
+      group = "DOOM",
+    },
+    { key = "ctrl+alt+r", action = "doom.restart", desc = "restart Doom", group = "DOOM" },
+    { key = "ctrl+alt+x", action = "doom.release", desc = "stop Doom", group = "DOOM" },
     -- Pane-scoped: the page keys belong to whoever is focused, and on the shell
     -- tab the action declines them so the pty keeps them (a pager has its own
     -- idea of what a page is).
@@ -1073,6 +1093,31 @@ local pane = {
     -- review tab: the diff, inside the same frame, under the same strip.
     if tab == REVIEW_TAB then
       return review_tab(ctx, session, level, border, strip, reserved_left)
+    end
+    if tab == DOOM_TAB then
+      local body
+      if not doom or not doom.available() then
+        body = centered({
+          { { text = "Doom is unavailable", style = { fg = theme.muted, bold = true } } },
+          {
+            {
+              text = "Install thurbox-doom to supply the engine and WAD",
+              style = { fg = theme.muted },
+            },
+          },
+        })
+      else
+        local ok, rendered = pcall(doom.render, ctx)
+        body = ok and rendered
+          or centered({ { { text = tostring(rendered), style = { fg = theme.bad } } } })
+      end
+      body.frame = border_frame(
+        fit_right_title(chrome.label("Doom", level), width, reserved_left),
+        level,
+        border,
+        strip
+      )
+      return body
     end
     -- Both views are live terminals with a scrollback each, so the offset is
     -- the one this SURFACE is holding — which is also the one the kernel will
@@ -1139,6 +1184,7 @@ local pane = {
     { action = SELECT_AGENT, desc = "show the agent tab" },
     { action = SELECT_SHELL, desc = "show the shell tab" },
     { action = REVEAL, desc = "scroll back to the last search result" },
+    { action = SELECT_DOOM, desc = "show the Doom tab" },
   },
 
   -- A wheel tick, which is NOT the page keys above.
@@ -1166,6 +1212,9 @@ local pane = {
   -- belongs at the live end of the stream: the offset is dropped and the key
   -- is DECLINED, so it still reaches the pty.
   on_key = function(key)
+    if store.selected and tab_of(store.selected) == DOOM_TAB then
+      return false
+    end
     -- review tab: the find query and a note being written take raw keys.
     if store.selected and tab_of(store.selected) == REVIEW_TAB then
       return review.on_key(key)
@@ -1195,6 +1244,27 @@ local pane = {
 
   on_action = function(action)
     local id = store.selected
+    if action == OPEN_DOOM then
+      if id then
+        show_tab(id, tab_of(id) == DOOM_TAB and AGENT_TAB or DOOM_TAB)
+      end
+      return true
+    end
+    if action == SELECT_DOOM then
+      if id then
+        show_tab(id, DOOM_TAB)
+      end
+      return true
+    end
+    if action == "doom.restart" or action == "doom.release" then
+      if not id or tab_of(id) ~= DOOM_TAB then
+        return false
+      end
+      return doom and doom.on_action(action) or false
+    end
+    if id and tab_of(id) == DOOM_TAB and (action == SCROLL_UP or action == SCROLL_DOWN) then
+      return false
+    end
     -- review tab: routed first, so the page keys can mean the review's pages.
     local routed = review_action(id, action)
     if routed ~= nil then
@@ -1256,5 +1326,6 @@ pane.capabilities = pane.capabilities or {}
 for _, capability in ipairs(review.CAPABILITIES) do
   pane.capabilities[#pane.capabilities + 1] = capability
 end
+pane.capabilities[#pane.capabilities + 1] = "program"
 
 return pane

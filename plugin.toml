@@ -30,7 +30,7 @@
 # Untrusted, the review works: `run` is absent, the kernel's diff draws, and `t`
 # names the choices it cannot serve rather than hiding them. See the README.
 name = "code-review"
-description = "thurbox's agent pane with a Review tab: a session's diff, reviewable beside its terminal"
+description = "thurbox's agent pane with Review and Doom tabs"
 version = "v0.3.0"
 
 # The agent pane is vendored from thurbox v2.35.2, and CI tests v2.35.2. v2.35 is
