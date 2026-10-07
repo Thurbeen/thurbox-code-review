@@ -6,7 +6,7 @@ its base branch, and it behaves exactly as Shell does: the same chip on the same
 strip, a chord that toggles it, a tab remembered per session, and no stop of its
 own on `Ctrl+H` / `Ctrl+L`.
 
-![The Review tab beside Agent and Shell: F8 and F7 switch tabs, Ctrl+H and Ctrl+L walk past it, two notes are written and sent to the agent](media/demo.gif)
+![The Review tab beside Agent and Shell, in thurbox's Doom theme: F8 and F7 switch tabs, Ctrl+H and Ctrl+L walk past it, a note is written on a line and sent to the agent](media/demo.gif)
 
 ```text
 ╭ ◀ F9 ─ Agent ─ Shell · F8 ─ Review · F7 ───────────────────── main..HEAD +8 -4 ╮
@@ -537,8 +537,11 @@ drifts.
 The GIF above is `demo/record.sh`: a throwaway thurbox (`demo/sandbox.sh` — its
 own `HOME`, XDG roots and tmux socket, and a made-up project) recorded with
 asciinema, driven by tmux because F7 is an F-key, and rendered with agg. It
-refuses to render a cast that contains the recording machine's username,
-hostname or paths.
+is recorded in thurbox's own `doom` theme, set the way the theme picker sets it
+(`THEME=<name>` records another), with the update check off so no release badge
+lands in the frame. It refuses to render a cast that contains the recording
+machine's username, hostname or paths. The current take is thurbox v2.53.1,
+asciinema 3.2.1 and agg 1.9.0.
 
 Three layers, because each catches what the one below cannot:
 

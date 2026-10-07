@@ -35,6 +35,7 @@ TM=(tmux -L review-demo)
 cleanup() {
     TMUX_TMPDIR="$S/tmux" "${TM[@]}" kill-server 2>/dev/null || true
     TMUX_TMPDIR="$S/tmux" tmux -L thurbox kill-server 2>/dev/null || true
+    rm -f "$(cat "$S/data-link")"
     rm -rf "$S"
 }
 trap cleanup EXIT INT TERM
@@ -42,9 +43,9 @@ trap cleanup EXIT INT TERM
 cat > "$S/run.sh" <<RUN
 #!/usr/bin/env bash
 export HOME="$S"
-export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$S/.local/share"
+export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$(cat "$S/data-link")"
 export XDG_STATE_HOME="$S/.local/state" XDG_CACHE_HOME="$S/.cache"
-export TMUX_TMPDIR="$S/tmux" TERM=xterm-256color
+export TMUX_TMPDIR="$S/tmux" TERM=xterm-256color COLORTERM=truecolor
 # The Shell tab starts \$SHELL. Pinned, so the recording shows a plain prompt
 # rather than the recording machine's shell and its first-run setup, or a
 # prompt carrying a user and host name.
@@ -58,7 +59,7 @@ chmod +x "$S/run.sh"
 export TMUX_TMPDIR="$S/tmux"
 CAST="$S/demo.cast"
 "${TM[@]}" new-session -d -x "$COLS" -y "$ROWS" \
-    "asciinema rec --overwrite --quiet --cols $COLS --rows $ROWS --command '$S/run.sh' '$CAST'"
+    "asciinema rec --overwrite --quiet --command '$S/run.sh' '$CAST'"
 
 # One key, then a pause long enough to read what it did.
 k() { "${TM[@]}" send-keys -t 0 "$1"; sleep "${2:-0.6}"; }
@@ -68,7 +69,7 @@ type_slowly() {
     local text=$1 i
     for ((i = 0; i < ${#text}; i++)); do
         "${TM[@]}" send-keys -t 0 -l "${text:i:1}"
-        sleep 0.05
+        sleep 0.035
     done
 }
 snap() { [ -n "$SNAP" ] && "${TM[@]}" capture-pane -p -t 0 >"$SNAP/$1.txt"; true; }
@@ -79,60 +80,44 @@ for _ in $(seq 1 60); do
     "${TM[@]}" capture-pane -p -t 0 2>/dev/null | grep -q 'cache-expiry' && break
     sleep 0.5
 done
-sleep 2
+sleep 1.2
 snap 0-start
 
 # The strip: Agent / Shell / Review, three tabs of one pane. F8 is the shell the
 # pane always had; F7 is the review beside it.
-k F8 2
+k F8 1.2
 snap 0-shell
-k F7 2.5
+k F7 1.6
 snap 1-review
 
 # Ctrl+H / Ctrl+L walk the panes, and the review is not one of them: focus goes to
 # the session list and back, and the review never leaves the screen.
-k C-h 1.5
+k C-h 0.9
 snap 1-ring-sessions
-k C-l 1.5
+k C-l 0.9
 snap 1-ring-back
 
-# Down the new test file, then to the next file and into its first change.
-k j; k j; k j; k j 1
-k Tab 1.5
+# The next file, and into its first change: `]` lands on the hunk header, and
+# six rows down is `DEFAULT_TTL = 600`.
+k Tab 1
 snap 2-next-file
-# `]` lands on the hunk header; six rows down is `DEFAULT_TTL = 600`.
-k ']' 1.5
-k j; k j; k j; k j; k j; k j 1.2
+k ']' 0.6
+k j 0.15; k j 0.15; k j 0.15; k j 0.15; k j 0.15; k j 0.8
 snap 3-on-a-line
 
-# A note on the line under the cursor.
-k c 1
+# A note on the line under the cursor, classified as an issue.
+k c 0.4
 type_slowly "is ten minutes right for every city?"
-sleep 1
-k Tab 1.2 # the classification cycles: praise
-k Tab 1.2 # issue
+sleep 0.5
+k Tab 0.6 # the classification cycles: praise
+k Tab 1   # issue
 snap 4-composing
-k Enter 2
+k Enter 1.2
 snap 5-noted
-
-# Find the line the second note is about, rather than counting rows to it — and a
-# second note, so the export has more than one thing in it. `↵` stops typing and
-# keeps the highlight; it does not move the cursor, `n` does. `esc` then closes
-# the bar and leaves the cursor on the match.
-k / 0.8
-type_slowly "timeout"
-k Enter 1
-k n 1.5
-k Escape 1
-snap 6-found
-k c 0.8
-type_slowly "a timeout here needs a test"
-k Enter 2
-snap 6-two-notes
 
 # Send it to the agent, which is where a review goes — and the pane shows the
 # Agent tab, to watch it arrive.
-k e 4
+k e 2.5
 snap 7-sent
 
 # Quit, which is what ends the recording: asciinema writes the cast when the
@@ -171,5 +156,5 @@ if found:
 PRIVATE
 
 mkdir -p "$(dirname "$OUT")"
-agg --font-size 16 --idle-time-limit 2 --last-frame-duration 4 "$CAST" "$OUT"
+agg --font-size 16 --idle-time-limit 2 --last-frame-duration 3 "$CAST" "$OUT"
 ls -lh "$OUT"
