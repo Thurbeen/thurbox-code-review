@@ -29,17 +29,17 @@ command -v sqlite3 >/dev/null || { echo "sqlite3 is needed to skip the first-lau
 ROOT=${DEMO_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/thurbox-code-review-demo}
 mkdir -p "$ROOT"
 S=$(mktemp -d "$ROOT/sandbox.XXXXXX")
-# Until the root is printed the caller cannot tear it down, and `session create`
-# has already started a tmux server by the time most of what follows can fail.
 # thurbox binds a unix socket under its data directory, and a socket path is
 # capped near 108 bytes — which a sandbox under the home directory overruns. The
 # data stays in the sandbox; thurbox reaches it through a short link in the temp
 # directory, named in `data-link` so the caller can remove it with the rest.
 LINK=$(mktemp -u "${TMPDIR:-/tmp}/tcr.XXXXXX")
+# Until the root is printed the caller cannot tear it down, and `session create`
+# has already started a tmux server by the time most of what follows can fail.
+trap 'TMUX_TMPDIR="$S/tmux" tmux -L thurbox kill-server 2>/dev/null; rm -f "$LINK"; rm -rf "$S"' ERR
 mkdir -p "$S/.local/share"
 ln -s "$S/.local/share" "$LINK"
 echo "$LINK" >"$S/data-link"
-trap 'TMUX_TMPDIR="$S/tmux" tmux -L thurbox kill-server 2>/dev/null; rm -f "$LINK"; rm -rf "$S"' ERR
 export HOME="$S"
 export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$LINK"
 export XDG_STATE_HOME="$S/.local/state" XDG_CACHE_HOME="$S/.cache"
