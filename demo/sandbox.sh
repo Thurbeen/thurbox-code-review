@@ -16,7 +16,8 @@
 #   demo/sandbox.sh
 #
 # Prints the sandbox root on stdout. The caller owns teardown:
-#   TMUX_TMPDIR=<root>/tmux tmux -L thurbox kill-server; rm -rf <root>
+#   TMUX_TMPDIR=<root>/tmux tmux -L thurbox kill-server
+#   rm -f "$(cat <root>/data-link)"; rm -rf <root>
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -30,9 +31,17 @@ mkdir -p "$ROOT"
 S=$(mktemp -d "$ROOT/sandbox.XXXXXX")
 # Until the root is printed the caller cannot tear it down, and `session create`
 # has already started a tmux server by the time most of what follows can fail.
-trap 'TMUX_TMPDIR="$S/tmux" tmux -L thurbox kill-server 2>/dev/null; rm -rf "$S"' ERR
+# thurbox binds a unix socket under its data directory, and a socket path is
+# capped near 108 bytes — which a sandbox under the home directory overruns. The
+# data stays in the sandbox; thurbox reaches it through a short link in the temp
+# directory, named in `data-link` so the caller can remove it with the rest.
+LINK=$(mktemp -u "${TMPDIR:-/tmp}/tcr.XXXXXX")
+mkdir -p "$S/.local/share"
+ln -s "$S/.local/share" "$LINK"
+echo "$LINK" >"$S/data-link"
+trap 'TMUX_TMPDIR="$S/tmux" tmux -L thurbox kill-server 2>/dev/null; rm -f "$LINK"; rm -rf "$S"' ERR
 export HOME="$S"
-export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$S/.local/share"
+export XDG_CONFIG_HOME="$S/.config" XDG_DATA_HOME="$LINK"
 export XDG_STATE_HOME="$S/.local/state" XDG_CACHE_HOME="$S/.cache"
 export TMUX_TMPDIR="$S/tmux"
 # These win over XDG, so an inherited one would point the sandbox at a real
@@ -52,6 +61,15 @@ name = "agent"
 command = "sh"
 args = ["-c", "stty -echoctl; exec cat >/dev/null"]
 AGENTS
+
+# A recording shows the pane, not the network: no "update available" badge, no
+# binary replaced underneath the run, no desktop notification.
+cat > "$XDG_CONFIG_HOME/thurbox/settings.toml" <<'SETTINGS'
+[features]
+version_check = false
+auto_update = false
+notifications = false
+SETTINGS
 
 git_demo() { git -c user.email=demo@example.com -c user.name=demo "$@"; }
 
@@ -174,10 +192,14 @@ git clone -q "$REPO" "$S/src/thurbox-code-review"
 rm "$XDG_CONFIG_HOME/thurbox/ui/plugins/20_agent.lua"
 
 # The first launch asks whether to continue to v2 and waits for an answer. A
-# recording is about the pane, so the answer is recorded up front.
+# recording is about the pane, so the answer is recorded up front. So is the
+# theme, in the row the theme picker writes: thurbox's own `doom` palette, which
+# every official plugin's demo is recorded in. THEME=<name> picks another.
 sqlite3 "$XDG_DATA_HOME/thurbox/thurbox.db" \
     "INSERT INTO metadata (key, value) VALUES ('v2_interface_acknowledged', '1')
-     ON CONFLICT(key) DO UPDATE SET value = '1';"
+     ON CONFLICT(key) DO UPDATE SET value = '1';
+     INSERT INTO metadata (key, value) VALUES ('active_theme', '${THEME:-doom}')
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
 
 "$CLI" plugin check --text >&2
 echo "$S"
