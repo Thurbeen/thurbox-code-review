@@ -258,6 +258,8 @@ it always did. `F1` and `Ctrl+P` list them under the agent pane, because that is
 the pane that declares them — and a review row run from the palette does nothing
 unless the Review tab is showing, for the same reason a letter does not.
 
+![The wheel scrolling the diff, then the changed-files list on its own; d/u half pages; ⇥ landing a file on the first line; a long line panned with l](media/scrolling.gif)
+
 **Scrolling moves the view, not only the cursor.** The wheel scrolls and leaves
 the cursor where it is until the view would leave it behind; the page and
 half-page keys carry the cursor with the view, so it keeps its place on screen.
