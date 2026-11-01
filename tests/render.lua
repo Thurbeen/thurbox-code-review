@@ -351,6 +351,7 @@ local function forget(session)
     "sel:",
     "top:",
     "hscroll:",
+    "listtop:",
     "marks:",
     "fold:",
     "notes:",
@@ -1794,6 +1795,48 @@ do
   check("scrolled right, the line starts with ‹", last():find("‹", 1, true) ~= nil, last())
   check("and at its end it is no longer cut", last():find("›", 1, true) == nil, last())
   has("the footer says how to pan", joined(render()), "h/l")
+  forget("s1")
+end
+
+print("== l never pans left ==")
+do
+  forget("s1")
+  -- Sixty lines, the last one long: from the top the long line is off screen.
+  local entry = ready(1, 30)
+  entry.body[#entry.body] = "+" .. string.rep("y", 300)
+  snapshot(entry)
+  render()
+  plugin.on_action("review.bottom")
+  render()
+  for _ = 1, 100 do
+    plugin.on_action("review.right")
+  end
+  render()
+  local far = state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0
+  check("scrolled right", far > 100, far)
+  plugin.on_action("review.top")
+  render()
+  plugin.on_action("review.right")
+  eq(
+    "with only short lines on screen, l keeps the column",
+    state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0,
+    far
+  )
+  forget("s1")
+end
+
+print("== a click behind the picker does not move the diff ==")
+do
+  forget("s1")
+  snapshot(ready(3, 30))
+  render()
+  plugin.on_action("review.top")
+  render()
+  plugin.on_action("review.target")
+  render()
+  check("a blank click is declined", plugin.on_click({ x = 60, y = 10 }) == false)
+  eq("and the diff's cursor did not move", cursor_now(), 1)
+  plugin.on_action("review.close")
   forget("s1")
 end
 

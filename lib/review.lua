@@ -1792,7 +1792,8 @@ function review.on_click(hit)
     local session = selected()
     local view = session and last_view[session.id]
     local map = session and last_body_map[session.id]
-    if not view or not map or (hit.x or 0) < view.body_x then
+    -- The picker is drawn over the diff; the map is the diff's last frame.
+    if not view or not map or picking(session.id) or (hit.x or 0) < view.body_x then
       return false
     end
     local row = map[(hit.y or 0) - view.body_y + 1]
@@ -2134,8 +2135,11 @@ function review.on_action(action, leave)
   elseif action == "review.right" then
     -- Stops where the widest line on screen ends, so `l` held down does not
     -- scroll into blank columns that then take as many presses to come back.
+    -- Never back, though: with only short lines on screen the stop is lower
+    -- than where you are, and `l` moving you left would be the wrong way.
     local most = view_of(id).hscroll_max or 0
-    set_hscroll(id, math.max(0, math.min(hscroll_of(id) + HSCROLL_STEP, most)))
+    local now = hscroll_of(id)
+    set_hscroll(id, math.max(now, math.min(now + HSCROLL_STEP, most)))
   elseif action == "review.left" then
     set_hscroll(id, math.max(0, hscroll_of(id) - HSCROLL_STEP))
   elseif action == "review.side" then
