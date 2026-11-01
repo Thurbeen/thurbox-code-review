@@ -253,6 +253,31 @@ bundled, those two rows are the edit — and the test is right to have been ther
 re-pointing a freed chord at something else would have silently changed what a v1
 user's muscle memory does.
 
+## 8. A wheel report does not say what it was over
+
+`on_scroll(wheel)` carries `up`, `x` and `y`. The coordinates are relative to the
+innermost **identified** node under the pointer — or the pane, when there is none
+— and nothing says which one that was. `on_click` gets `hit.id` for exactly this
+reason; `on_scroll` does not. Read in `coordinator/mouse.rs` at v2.35.2, the tag
+CI pins, and unchanged on thurbox `main` at `c8fe7d3`.
+
+So a pane with two scrollable regions that are both identified cannot tell them
+apart: a tick on the review's first diff line and a tick on a changed-files row
+both arrive as `y = 0` and a small `x`. The review works around it by giving the
+diff body no `id` (its clicks and ticks then arrive in pane coordinates) and
+telling the regions apart by `x` alone. It holds because the body is the only
+large region, and it would not survive a second identified one.
+
+The README's line — "`wheel.x`/`wheel.y` inside your rect" — reads as the pane's
+rect, which is what a plugin author will assume.
+
+The ask, as a thurbox issue (not opened): give `on_scroll` the same `id` and
+`role` an `on_click` hit carries, from the same `ClickTarget` — `Scroll` gains two
+fields and `coordinator/mouse.rs` fills them from `target.identity`. While there,
+`MouseEventKind::ScrollLeft` / `ScrollRight` are dropped today; passing them as
+`wheel.left` / `wheel.right` would let a pane pan with a horizontal wheel or
+`Shift`+wheel, which is how long lines are read in most viewers.
+
 ---
 
 ## Already fixed, recorded so the reasoning is not lost

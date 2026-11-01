@@ -266,7 +266,8 @@ end
 local function has_body(tree)
   local found = false
   walk(tree, function(item)
-    if item.type == "surface" and item.id == "body" then
+    -- The review's body is the surface that names no session.
+    if item.type == "surface" and item.cells and not item.session then
       found = true
     end
   end)
@@ -782,9 +783,20 @@ do
   eq("not the terminal's scrollback", state_backing["scroll:s1"], nil)
   check("page up is handled", fork.on_action("terminal.scroll_up"))
   check("and pages back", cursor() < paged, "at " .. cursor())
-  local before = cursor()
-  check("the wheel is handled", fork.on_scroll({ up = false }))
-  check("and moves the review's cursor", cursor() > before, before .. " -> " .. cursor())
+  local function top()
+    for key, value in pairs(state_backing) do
+      if key:match("^top:s1") then
+        return value
+      end
+    end
+    return 1
+  end
+  fork.on_action("review.top")
+  fork.render(WIDE)
+  -- Over the body, in pane coordinates: past the changed-files list.
+  check("the wheel is handled", fork.on_scroll({ up = false, x = 100, y = 5 }))
+  fork.render(WIDE)
+  check("and scrolls the review's view", top() > 1, "top " .. top())
   eq("still not the terminal's scrollback", state_backing["scroll:s1"], nil)
 end
 

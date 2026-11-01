@@ -1155,9 +1155,9 @@ local pane = {
   -- outer terminal means, and it is what a forwarded tick already delivers.
   on_scroll = function(wheel)
     local id = store.selected
-    -- review tab: the wheel moves the review's cursor, a line a report.
+    -- review tab: the wheel scrolls whichever part of the review is under it.
     if id and tab_of(id) == REVIEW_TAB then
-      return review.on_action(wheel.up and "review.previous" or "review.next", function() end)
+      return review.on_scroll(wheel)
     end
     return scroll_surface(surface_of(id, tab_of(id)), wheel.up and 1 or -1)
   end,

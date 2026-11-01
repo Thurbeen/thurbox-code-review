@@ -351,6 +351,7 @@ local function forget(session)
     "sel:",
     "top:",
     "hscroll:",
+    "listtop:",
     "marks:",
     "fold:",
     "notes:",
@@ -820,9 +821,9 @@ end
 print("== the body is clickable, without a fifth node kind ==")
 do
   -- The question side-by-side was meant to settle: does a dense pane need a node
-  -- kind with per-line identity? It does not. A `surface` takes an `id` like any
-  -- node, the kernel records its rect, and a click arrives with coordinates
-  -- inside it — which the plugin can resolve because it decided the geometry.
+  -- kind with per-line identity? It does not. A click on a node without
+  -- identity reaches the pane in the pane's own coordinates, and the plugin can
+  -- resolve those because it decided the geometry.
   local diff = require("thurbox-code-review.lib.diff")
   diff.forget("s1")
   snapshot(ready(3, 6))
@@ -835,19 +836,20 @@ do
       body = item
     end
   end)
-  eq("the surface carries identity", body and body.id, "body")
+  -- No identity: an identified body would report clicks and wheel ticks in its
+  -- own coordinates, and a wheel tick does not say which node it was over.
+  eq("the surface carries no identity", body and body.id, nil)
 
-  -- Click ten lines down and the cursor lands on whatever was drawn there.
+  -- Click ten lines down and the cursor lands on whatever was drawn there. Pane
+  -- coordinates: the border is row 0, so the body's tenth line is y = 10.
   local before = selected_line(render())
-  check("clicking the body is handled", plugin.on_click({ id = "body", x = 4, y = 10 }))
+  check("clicking the body is handled", plugin.on_click({ x = 40, y = 10 }))
   local after = selected_line(render())
   check("and the selection moved", before ~= after, tostring(before) .. " -> " .. tostring(after))
 
   -- A click past the drawn rows is declined rather than guessed at.
-  check(
-    "a click below the content is declined",
-    plugin.on_click({ id = "body", x = 0, y = 9999 }) == false
-  )
+  check("a click below the content is declined", plugin.on_click({ x = 40, y = 9999 }) == false)
+  check("and so is a click on the list's blank tail", plugin.on_click({ x = 3, y = 30 }) == false)
 
   diff.forget("s1")
 end
@@ -1594,6 +1596,264 @@ do
 
   grant_run(false)
   forget_runs()
+  forget("s1")
+end
+
+-- ── scrolling ───────────────────────────────────────────────────────────────
+--
+-- Geometry these blocks lean on: at 120×40 the inner rect is 118×38, the
+-- changed-files list is 34 columns at x 1..34 of the PANE (the border is x 0,
+-- which is how the kernel reports a wheel), and the body is 38 rows. ready(3, 30)
+-- is three files of 62 logical rows each — header, hunk, 30 removed, 30 added —
+-- so 186 rows, and the last top that still fills the body is 186 - 38 + 1.
+
+local LIST_X, BODY_X = 3, 60
+local ROWS_3x30, BODY_H = 186, 38
+
+local function top_now()
+  return state_backing["top:s1" .. DEFAULT_SCOPE] or 1
+end
+
+local function cursor_now()
+  return state_backing["sel:s1" .. DEFAULT_SCOPE] or 1
+end
+
+local function wheel(up, x, times)
+  local handled = true
+  for _ = 1, times or 1 do
+    handled = plugin.on_scroll({ up = up, x = x, y = 10 }) and handled
+    render()
+  end
+  return handled
+end
+
+print("== the wheel scrolls the view under it ==")
+do
+  forget("s1")
+  snapshot(ready(3, 30))
+  render()
+  local first_before = body_texts(render())[1]
+
+  check("a tick over the body is handled", wheel(false, BODY_X))
+  check("and moves the view, not only the cursor", top_now() > 1, "top " .. top_now())
+  check("so the first line on screen changes", body_texts(render())[1] ~= first_before)
+  check("and the cursor stays on screen", selected_line(render()) ~= nil)
+
+  -- The first line of the body, in pane coordinates. A file row reports y = 0
+  -- in its own; this must not be mistaken for one.
+  local was = top_now()
+  plugin.on_scroll({ up = false, x = BODY_X, y = 1 })
+  render()
+  check("a tick on the body's first line scrolls the body", top_now() > was)
+
+  check("ticking up comes back", wheel(true, BODY_X, 2))
+  eq("to the very top", top_now(), 1)
+  wheel(true, BODY_X, 5)
+  eq("and clamps there", top_now(), 1)
+
+  wheel(false, BODY_X, 200)
+  eq("down clamps at the last full page", top_now(), ROWS_3x30 - BODY_H + 1)
+  local lines = body_texts(render())
+  has("whose last line is the diff's last", lines[#lines], "new line 30 of file 3")
+  check("with the cursor still on screen", selected_line(render()) ~= nil)
+  forget("s1")
+end
+
+print("== the wheel over the changed-files list scrolls the list ==")
+do
+  forget("s1")
+  -- Sixty files and one directory: 61 list rows in a 38-row column.
+  snapshot(ready(60, 1))
+  render()
+  local first = file_ids(render())[1]
+  eq("the list starts at the top", first, "file:pkg/file1.txt")
+
+  -- Over a file row the report is in the ROW's coordinates: y is 0.
+  check("a tick on a file row is handled", plugin.on_scroll({ up = false, x = 5, y = 0 }))
+  render()
+  check("and scrolls the list", file_ids(render())[1] ~= first, file_ids(render())[1])
+  eq("not the body", top_now(), 1)
+  check("a tick over the list is handled", wheel(false, LIST_X, 3))
+  check("the list moved", file_ids(render())[1] ~= first, file_ids(render())[1])
+  eq("and the body did not", top_now(), 1)
+  eq("nor the cursor", cursor_now(), 1)
+
+  wheel(false, LIST_X, 200)
+  local shown = file_ids(render())
+  -- The list sorts by path, so file9 is its last row.
+  eq("down clamps with the last file on the last row", shown[#shown], "file:pkg/file9.txt")
+  local clamped = shown[1]
+  wheel(false, LIST_X, 5)
+  eq("and stays clamped", file_ids(render())[1], clamped)
+
+  wheel(true, LIST_X, 200)
+  eq("up clamps at the first file", file_ids(render())[1], "file:pkg/file1.txt")
+
+  -- Moving the body brings the list back to the file you are in.
+  wheel(false, LIST_X, 200)
+  plugin.on_action("review.top")
+  render()
+  eq("the list follows the body again", file_ids(render())[1], "file:pkg/file1.txt")
+  forget("s1")
+end
+
+print("== half pages and pages move the view, and clamp ==")
+do
+  forget("s1")
+  snapshot(ready(3, 30))
+  render()
+  check(
+    "d is declared",
+    (function()
+      for _, binding in ipairs(plugin.keys) do
+        if binding.key == "d" and binding.action == "review.half_down" then
+          return true
+        end
+      end
+      return false
+    end)()
+  )
+  check(
+    "u is declared",
+    (function()
+      for _, binding in ipairs(plugin.keys) do
+        if binding.key == "u" and binding.action == "review.half_up" then
+          return true
+        end
+      end
+      return false
+    end)()
+  )
+
+  check("d is handled", plugin.on_action("review.half_down"))
+  render()
+  eq("d moves the view half a body", top_now(), 1 + math.floor(BODY_H / 2))
+  eq("and the cursor with it", cursor_now(), 1 + math.floor(BODY_H / 2))
+  plugin.on_action("review.half_up")
+  render()
+  eq("u comes back", top_now(), 1)
+  plugin.on_action("review.half_up")
+  render()
+  eq("and clamps at the top", top_now(), 1)
+
+  plugin.on_action("review.page_down")
+  render()
+  eq("a page moves the view a body less one line", top_now(), BODY_H)
+
+  for _ = 1, 20 do
+    plugin.on_action("review.half_down")
+  end
+  render()
+  eq("the view clamps at the last full page", top_now(), ROWS_3x30 - BODY_H + 1)
+  eq("and the cursor reaches the last row", cursor_now(), ROWS_3x30)
+  forget("s1")
+end
+
+print("== a jump puts what you asked for at the top ==")
+do
+  forget("s1")
+  snapshot(ready(3, 30))
+  render()
+  plugin.on_action("review.next_file")
+  local lines = body_texts(render())
+  has("tab lands with the file's header on the first line", lines[1], "pkg/file2.txt")
+  plugin.on_click({ id = "file:pkg/file3.txt", role = "row" })
+  lines = body_texts(render())
+  has("so does a click in the list", lines[1], "pkg/file3.txt")
+  plugin.on_action("review.top")
+  plugin.on_action("review.next_hunk")
+  plugin.on_action("review.next_hunk")
+  lines = body_texts(render())
+  has("and a hunk jump below the fold", lines[1], "pkg/file2.txt")
+  forget("s1")
+end
+
+print("== long lines say they are cut, and h/l stop at the end ==")
+do
+  forget("s1")
+  local entry = ready(1, 2)
+  local long = string.rep("x", 300)
+  entry.body[#entry.body] = "+" .. long
+  snapshot(entry)
+  render()
+  plugin.on_action("review.bottom")
+  local function last()
+    local lines = body_texts(render())
+    for index = #lines, 1, -1 do
+      if lines[index]:find("x", 1, true) then
+        return lines[index]
+      end
+    end
+    return ""
+  end
+  check("a cut line ends in ›", last():find("›%s*$") ~= nil, last())
+  for _ = 1, 100 do
+    plugin.on_action("review.right")
+  end
+  local hscroll = state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0
+  check("h/l stop where the longest line ends", hscroll <= 300 and hscroll > 200, hscroll)
+  check("scrolled right, the line starts with ‹", last():find("‹", 1, true) ~= nil, last())
+  check("and at its end it is no longer cut", last():find("›", 1, true) == nil, last())
+  has("the footer says how to pan", joined(render()), "h/l")
+  forget("s1")
+end
+
+print("== l never pans left ==")
+do
+  forget("s1")
+  -- Sixty lines, the last one long: from the top the long line is off screen.
+  local entry = ready(1, 30)
+  entry.body[#entry.body] = "+" .. string.rep("y", 300)
+  snapshot(entry)
+  render()
+  plugin.on_action("review.bottom")
+  render()
+  for _ = 1, 100 do
+    plugin.on_action("review.right")
+  end
+  render()
+  local far = state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0
+  check("scrolled right", far > 100, far)
+  plugin.on_action("review.top")
+  render()
+  plugin.on_action("review.right")
+  eq(
+    "with only short lines on screen, l keeps the column",
+    state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0,
+    far
+  )
+  forget("s1")
+end
+
+print("== a click behind the picker does not move the diff ==")
+do
+  forget("s1")
+  snapshot(ready(3, 30))
+  render()
+  plugin.on_action("review.top")
+  render()
+  plugin.on_action("review.target")
+  render()
+  check("a blank click is declined", plugin.on_click({ x = 60, y = 10 }) == false)
+  eq("and the diff's cursor did not move", cursor_now(), 1)
+  plugin.on_action("review.close")
+  forget("s1")
+end
+
+print("== a narrow pane ==")
+do
+  forget("s1")
+  snapshot(ready(3, 30))
+  local narrow = { width = 50, height = 20, focused = true, elapsed = 0 }
+  local tree = render(narrow)
+  eq("drops the files list", #file_ids(tree), 0)
+  local text = joined(tree)
+  has("still says how to move", text, "j/k move")
+  has("and how to scroll", text, "d/u scroll")
+  check("a tick anywhere scrolls the body", plugin.on_scroll({ up = false, x = 3, y = 5 }))
+  render(narrow)
+  check("which moved", top_now() > 1, top_now())
+  check("with the cursor on screen", selected_line(render(narrow)) ~= nil)
   forget("s1")
 end
 
