@@ -443,13 +443,22 @@ local function expand(into, row, opts)
   local body_style = { fg = fg, bg = bg, bold = selected or nil }
   local sign_style = { fg = selected and role("selection_fg") or side_fg(row.side), bg = bg }
 
+  local cut_style = { fg = role("text_muted"), bg = bg }
+
   --- One visual line: gutter (or a blank one on continuations) + a slice.
-  local function emit(chunk, continuation)
+  ---
+  --- `left` / `right` draw `‹` / `›` in the first / last column, saying the line
+  --- goes on past that edge. Only a horizontally scrolled line has them: a
+  --- wrapped one shows every column, so there is nothing to point at.
+  local function emit(chunk, continuation, left, right)
     local runs = {
       { text = gutter_text(row, digits, continuation), style = gutter_style },
       { text = continuation and " " or sign, style = sign_style },
       { text = " ", style = gutter_style },
     }
+    if left then
+      runs[#runs + 1] = { text = "‹", style = cut_style }
+    end
     for _, run in
       ipairs(
         code_runs(
@@ -462,8 +471,14 @@ local function expand(into, row, opts)
     do
       runs[#runs + 1] = run
     end
-    local used = len(chunk)
-    if used < body_w then
+    local used = len(chunk) + (left and 1 or 0) + (right and 1 or 0)
+    if right then
+      local pad_w = math.max(0, body_w - used)
+      if pad_w > 0 then
+        runs[#runs + 1] = { text = string.rep(" ", pad_w), style = body_style }
+      end
+      runs[#runs + 1] = { text = "›", style = cut_style }
+    elseif used < body_w then
       runs[#runs + 1] = { text = string.rep(" ", body_w - used), style = body_style }
     end
     into[#into + 1] = runs
@@ -471,8 +486,14 @@ local function expand(into, row, opts)
 
   if not opts.wrap then
     -- Horizontal scroll slides the body only; the gutter stays pinned, which is
-    -- what makes it usable as a ruler while you are scrolled right.
-    emit(slice(text, opts.hscroll + 1, opts.hscroll + body_w), false)
+    -- what makes it usable as a ruler while you are scrolled right. A marker
+    -- takes the edge column it sits in, so a cut line says it is cut rather
+    -- than ending at the border as though that were where it stopped.
+    local total = len(text)
+    local first, last = opts.hscroll + 1, opts.hscroll + body_w
+    local left = opts.hscroll > 0 and total > 0
+    local right = total > last
+    emit(slice(text, first + (left and 1 or 0), last - (right and 1 or 0)), false, left, right)
     return 1
   end
 
@@ -649,6 +670,34 @@ function M.scroll_to(rows, first, opts)
     at = at - 1
   end
   return math.max(first, math.max(1, at))
+end
+
+--- The highest `first` worth having: the one that puts the last row on the
+--- last line. Scrolling past it would only draw blank space under the diff.
+function M.max_top(rows, opts)
+  if #rows == 0 then
+    return 1
+  end
+  return M.scroll_to(rows, 1, {
+    selected = #rows,
+    height = opts.height,
+    width = opts.width,
+    digits = opts.digits,
+    wrap = opts.wrap,
+  })
+end
+
+--- The last logical row a window starting at `first` shows, at least `first`.
+function M.last_visible(rows, first, opts)
+  local used, at = 0, first
+  while at <= #rows do
+    used = used + height_of(rows[at], opts)
+    if used > opts.height then
+      break
+    end
+    at = at + 1
+  end
+  return math.max(first, math.min(#rows, at - 1))
 end
 
 M.slice = slice

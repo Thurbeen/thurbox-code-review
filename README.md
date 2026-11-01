@@ -231,11 +231,13 @@ On the Review tab:
 |---|---|
 | `F7` / `Ctrl+X` | show the Review tab, or the Agent tab if Review is showing (global; `Ctrl+X` only from outside the agent pane) |
 | `j` `k` `↑` `↓` | move by one logical row |
-| `PgUp` `PgDn` `g` `G` | page, top, bottom |
-| wheel | move by one logical row |
+| `d` `u` | scroll half a page down / up — the view and the cursor together |
+| `PgUp` `PgDn` | scroll a page, the same way |
+| `g` `G` | top, bottom |
+| wheel | scroll whatever is under the pointer, three rows a report: the diff, or the changed-files list on its own |
 | `⇥` `⇧⇥` | next / previous file, walking the **list** — which reaches files whose patch the cap cut |
 | `[` `]` | previous / next hunk |
-| `h` `l` `←` `→` | scroll the body horizontally (the gutter stays pinned) |
+| `h` `l` `←` `→` | scroll the body horizontally (the gutter stays pinned), stopping where the widest line on screen ends |
 | `v` | side by side, or unified |
 | `w` | soft-wrap long lines (unified only) |
 | `f` | show or hide the changed-files list |
@@ -255,6 +257,22 @@ On the Agent and Shell tabs every one of these letters reaches the terminal, as
 it always did. `F1` and `Ctrl+P` list them under the agent pane, because that is
 the pane that declares them — and a review row run from the palette does nothing
 unless the Review tab is showing, for the same reason a letter does not.
+
+**Scrolling moves the view, not only the cursor.** The wheel scrolls and leaves
+the cursor where it is until the view would leave it behind; the page and
+half-page keys carry the cursor with the view, so it keeps its place on screen.
+Every offset stops at the diff's ends — the last row sits on the last line, never
+above blank space. A jump (`⇥`, `[` `]`, `n`, a click in the list) puts what you
+asked for on the **first** line rather than wherever the view happened to reach
+it. A line cut by the edge ends in `›`, starts with `‹` once you have scrolled
+right, and the footer offers `h/l pan` while one is on screen.
+
+The wheel over the changed-files list scrolls the list alone, so a long list can
+be read without moving the diff; the next move of the diff brings the list back
+to the file you are in.
+
+Half pages are `d`/`u`, as in `less`, not Vim's `Ctrl+D`/`Ctrl+U`: those two are
+thurbox's global delete-session and restore chords.
 
 `r` is refresh rather than v1's mark-reviewed, because `r` is refresh in every
 other pane and a chord that means two different things depending on where you
@@ -383,11 +401,13 @@ geometry, so the arithmetic is its own. Everything here is `text`, `box` and
 `surface`. There are still four, and `tests/run.sh --render` asserts it
 mechanically.
 
-The body is **clickable** through the same primitive: a `surface` takes an `id`
-like any node, the kernel records its rect, and a click arrives with `x`/`y`
-inside it. The review resolves that to a logical row from the map it drew — which
-it can, because it decided where every row went. Per-line identity in the node
-tree was never the only way to be clickable.
+The body is **clickable** without per-line identity: a click on a node with no
+`id` reaches the pane in the pane's own coordinates, and the review resolves it
+to a logical row from the map it drew — which it can, because it decided where
+every row went. The body deliberately carries **no** `id`: a wheel report is in
+the coordinates of the identified node under the pointer and does not say which
+node that was, so an identified body and an identified file row reported the same
+numbers. `KERNEL-GAPS.md` §8 has the one-field fix.
 
 Colour is roles only — `diff_added`, `diff_removed`, `diff_added_bg`,
 `diff_removed_bg`, `branch_name`, `selection_*` — so the review is themed by all

@@ -80,6 +80,10 @@ local HSCROLL_STEP = 8
 --- happened to be wrapped, which is the rule above leaking out through a key.
 local PAGE = 10
 
+--- Logical rows one wheel report moves the view. Three, as most viewers scroll
+--- a line-oriented document: one row a report made a long diff feel stuck.
+local WHEEL_STEP = 3
+
 --- The rule between the changed-files list and the diff body. Thin and in the
 --- unfocused border role whatever the focus: it splits the pane, it does not
 --- frame one, and a second accented rule inside the focused frame would read as
@@ -212,6 +216,17 @@ end
 
 local function set_hscroll(id, at)
   state["hscroll:" .. scope(id)] = at > 0 and at or nil
+end
+
+--- The changed-files list's own scroll offset, set only by the wheel over the
+--- list. Nil means "follow the file the body is in", which is what every move
+--- of the body puts it back to (`move_to`).
+local function list_top_of(id)
+  return state["listtop:" .. scope(id)]
+end
+
+local function set_list_top(id, at)
+  state["listtop:" .. scope(id)] = at
 end
 
 -- ── composing a note ────────────────────────────────────────────────────────
@@ -710,7 +725,18 @@ local function files_pane(files, opts)
       here = at
     end
   end
-  local first, last = widgets.window(#tree, height, here or 1)
+  local first, last
+  if opts.first then
+    -- Scrolled by the wheel: an offset of its own, clamped so the last file
+    -- sits on the last row rather than above blank space.
+    first = math.max(1, math.min(opts.first, #tree - height + 1))
+    last = math.min(#tree, first + height - 1)
+  else
+    first, last = widgets.window(#tree, height, here or 1)
+  end
+  if opts.shown then
+    opts.shown(first, #tree)
+  end
 
   local children = {}
   for at = first, last do
@@ -1036,7 +1062,7 @@ end
 --- do next and sits beside `note`, because the pane beside the session list is
 --- ~90 columns and a strip trimmed from the right lost it on exactly the screen
 --- where a note had just been written.
-local function footer(width, ready, sendable)
+local function footer(width, ready, sendable, pan)
   local hints = {}
   local function put(label, keys)
     hints[#hints + 1] = hint(label, keys)
@@ -1046,6 +1072,7 @@ local function footer(width, ready, sendable)
     put("back", "esc")
   else
     put("move", "j/k")
+    put("scroll", "d/u")
     put("file", "⇥")
     put("hunk", "[ ]")
     put("find", "/")
@@ -1054,6 +1081,10 @@ local function footer(width, ready, sendable)
       put("send", "e")
     end
     put("fold", "↵")
+    -- Only while a line on screen is cut: then it is how to read the rest.
+    if pan then
+      put("pan", "h/l")
+    end
     -- Every key that changes what the BODY looks like belongs here. `w` was
     -- dropped from this list when `v` was added — replaced rather than added to
     -- — and the result is the failure this pane's own README warns about: the
@@ -1102,6 +1133,7 @@ local HUNK_KINDS = { hunk = true, file = true }
 --- body unless you drove it" holds by construction instead of by remembering.
 local function move_to(id, in_force, at)
   set_list_at(id, nil)
+  set_list_top(id, nil)
   local count = #in_force
   if count == 0 then
     return
@@ -1174,11 +1206,51 @@ local last_body_map = {}
 --- `render` knows. Recorded from the last frame rather than recomputed, which is
 --- the documented way round: a value derived while drawing is invisible to a key
 --- unless the drawing wrote it down.
-local last_body_height = {}
+local last_view = {}
+
+--- The view as the last frame drew it, or a plausible one before any frame has.
+local function view_of(id)
+  return last_view[id] or { height = PAGE, width = 80, digits = 4, wrap = false }
+end
+
+--- Move the cursor to `row` and put it on the FIRST line of the view.
+---
+--- For jumps — a file, a hunk, a match, a click in the list. Before this a jump
+--- moved the view only as far as it had to, so `⇥` drew the next file's header
+--- on the bottom line under a screen of the file you were leaving.
+local function jump_to(id, in_force, row)
+  move_to(id, in_force, row)
+  set_top(id, math.min(cursor_of(id), rows.max_top(in_force, view_of(id))))
+end
+
+--- Scroll the VIEW by `delta` logical rows, clamped to the diff.
+---
+--- `drag` moves the cursor by the same amount, so it keeps its place on screen —
+--- the page and half-page keys, which is what makes a page key page. Without it
+--- (the wheel) the cursor stays where it is unless the view leaves it behind,
+--- and then it is pulled onto the nearest edge.
+local function scroll_view(id, in_force, delta, drag)
+  if #in_force == 0 then
+    return
+  end
+  local view = view_of(id)
+  local highest = rows.max_top(in_force, view)
+  local from = math.min(top_of(id), highest)
+  local to = math.max(1, math.min(from + delta, highest))
+  local at = math.min(cursor_of(id), #in_force)
+  if drag then
+    move_to(id, in_force, at + delta)
+  else
+    local last = rows.last_visible(in_force, to, view)
+    if at < to or at > last then
+      move_to(id, in_force, at < to and to or last)
+    end
+  end
+  set_top(id, to)
+end
 
 local function page(id, in_force, direction)
-  local height = last_body_height[id] or PAGE
-  move_to(id, in_force, cursor_of(id) + direction * math.max(1, height - 1))
+  scroll_view(id, in_force, direction * math.max(1, view_of(id).height - 1), true)
 end
 
 -- ── the module the agent pane calls ─────────────────────────────────────────
@@ -1256,6 +1328,11 @@ review.KEYS = {
   { key = "up", action = "review.previous", desc = "previous line" },
   { key = "g", action = "review.top", desc = "first line" },
   { key = "G", action = "review.bottom", desc = "last line" },
+  -- `less`'s half pages. Not Ctrl+D / Ctrl+U: those are the global
+  -- delete-session and restore chords, and a review key that deleted the session
+  -- under review when the binding fell through would be a trap.
+  { key = "d", action = "review.half_down", desc = "scroll half a page down" },
+  { key = "u", action = "review.half_up", desc = "scroll half a page up" },
   { key = "tab", action = "review.next_file", desc = "next file" },
   { key = "shift+tab", action = "review.previous_file", desc = "previous file" },
   { key = "]", action = "review.next_hunk", desc = "next hunk" },
@@ -1319,7 +1396,7 @@ function review.render(ctx, chrome)
       border_style = edge,
       overlay = {
         top_left = chrome.strip,
-        bottom_left = footer(width, opts.ready == true, opts.sendable == true),
+        bottom_left = footer(width, opts.ready == true, opts.sendable == true, opts.pan == true),
         right_column = opts.right_column,
       },
     }
@@ -1422,7 +1499,7 @@ function review.render(ctx, chrome)
   -- `parse.rows`.
   local in_force = rows_in_force(parse, id)
   settle_jump(id, parse, in_force, function(row)
-    move_to(id, in_force, row)
+    jump_to(id, in_force, row)
   end)
   local reviewed = marks_of(id)
 
@@ -1469,7 +1546,6 @@ function review.render(ctx, chrome)
   local held = compose_of(id)
   local compose_h = held and 4 or 0
   local body_h = math.max(1, inner_h - bar - notice - compose_h)
-  last_body_height[id] = body_h
 
   local at = math.min(cursor_of(id), math.max(1, #in_force))
   local covered = diff.covered(parse)
@@ -1519,6 +1595,25 @@ function review.render(ctx, chrome)
   local top = rows.scroll_to(in_force, math.min(top_of(id), at), window)
   local lines, logical, used = rows.window(in_force, top, window)
   last_body_map[id] = logical
+
+  -- The widest line on screen, for the pan hint and for where `l` stops.
+  -- Unified only: side by side does not scroll sideways.
+  local text_w = math.max(1, body_w - rows.gutter_width(digits))
+  local widest = 0
+  if not window.wrap and not side_by_side() then
+    local seen = nil
+    for _, row_at in ipairs(logical) do
+      if row_at ~= seen then
+        seen = row_at
+        local row = in_force[row_at]
+        if row and row.kind == "line" then
+          widest = math.max(widest, rows.len(row.text or ""))
+        end
+      end
+    end
+  end
+  local cut = widest > text_w or window.hscroll > 0
+  local list_first, list_rows = 1, 0
   if used ~= top_of(id) then
     set_top(id, used)
   end
@@ -1526,10 +1621,15 @@ function review.render(ctx, chrome)
   -- The diff body: a SURFACE. Its own `scroll` stays 0 — the window above is
   -- logical, and the surface's offset counts visual lines, so letting it
   -- scroll too would be two anchors fighting over one body.
-  -- `id` on a surface is what makes the body clickable. Nothing else is
-  -- needed: the kernel records the rect of any node carrying identity, and a
-  -- click comes back with coordinates inside it.
-  local body = { type = "surface", id = "body", cells = lines, fill = 1 }
+  --
+  -- No `id`, on purpose. A click or a wheel report over a node WITH identity
+  -- comes back in that node's coordinates, and a wheel report does not say
+  -- which node it was — so with the body and the file rows both identified, a
+  -- tick on the body's first line and a tick on a file row arrived as the same
+  -- numbers. Without one, the body's clicks and ticks arrive in the PANE's
+  -- coordinates (the kernel's fallback target), and the body is wherever this
+  -- render put it (`last_view`).
+  local body = { type = "surface", cells = lines, fill = 1 }
 
   local content = { body }
   if show_files then
@@ -1554,9 +1654,29 @@ function review.render(ctx, chrome)
         covered = covered,
         parsed = parse.done,
         reviewed = reviewed,
+        first = list_top_of(id),
+        shown = function(first, count)
+          list_first, list_rows = first, count
+        end,
       })
     )
   end
+  last_view[id] = {
+    height = body_h,
+    width = body_w,
+    digits = digits,
+    wrap = wrap,
+    -- Where the list starts on the pane, in the wheel's coordinates: the
+    -- border is column 0, so the list is columns 1..files_w.
+    files_w = show_files and files_w or 0,
+    -- The body's first cell in pane coordinates: past the border, the list and
+    -- its divider, and under the banner and the find bar.
+    body_x = 1 + (show_files and (files_w + 1) or 0),
+    body_y = 1 + notice + bar,
+    list_first = list_first,
+    list_rows = list_rows,
+    hscroll_max = math.max(0, widest - text_w),
+  }
 
   local stack = {}
   if notice == 1 then
@@ -1618,6 +1738,7 @@ function review.render(ctx, chrome)
   return frame({
     ready = true,
     sendable = #notes.all(state, id) > 0,
+    pan = cut,
     right = right,
     -- `inner_h`, not the pane height: the column is painted into the inner
     -- rows, so a bar built for two rows more put its ▼ past the last one and
@@ -1664,12 +1785,17 @@ function review.on_key(key)
 end
 
 function review.on_click(hit)
-  if hit.id == "body" then
-    -- A coordinate, resolved through the map the last frame recorded. The
-    -- surface has no per-line identity to hand back, and does not need one.
+  if hit.id == nil then
+    -- A click on the body, in pane coordinates, resolved through the map the
+    -- last frame recorded. The surface has no per-line identity to hand back,
+    -- and does not need one.
     local session = selected()
+    local view = session and last_view[session.id]
     local map = session and last_body_map[session.id]
-    local row = map and map[(hit.y or 0) + 1]
+    if not view or not map or (hit.x or 0) < view.body_x then
+      return false
+    end
+    local row = map[(hit.y or 0) - view.body_y + 1]
     if not row then
       return false
     end
@@ -1721,12 +1847,52 @@ function review.on_click(hit)
   local in_force = rows_in_force(parse, session.id)
   local row = diff.file_row(in_force, path)
   if row then
-    move_to(session.id, in_force, row)
+    jump_to(session.id, in_force, row)
   else
     -- The list is the kernel's and is complete; the body is this pane's and is
     -- not, yet. Remember the ask and let the parse deliver it.
     wanted[scope(session.id)] = path
   end
+  return true
+end
+
+--- A wheel report over the Review tab.
+---
+--- Over the changed-files list it scrolls the list; anywhere else it scrolls
+--- the diff's view. Either way the report is handled, so it is never turned into
+--- an `up`/`down` keystroke on top.
+---
+--- Which one is read from `x` alone, and only because of how the tree is built:
+--- a report is in the coordinates of the identified node under the pointer, or
+--- the pane's when there is none. Over a file row that is the row's own, so `x`
+--- is under the list's width; over the list's blank tail it is the pane's, so
+--- `x` is 1..files_w; over the body — which carries no identity for exactly
+--- this reason — it is the pane's too, and past the list and its divider.
+function review.on_scroll(wheel)
+  local session = selected()
+  if not session then
+    return false
+  end
+  local id = session.id
+  local delta = wheel.up and -WHEEL_STEP or WHEEL_STEP
+  if picking(id) then
+    return review.on_action(wheel.up and "review.previous" or "review.next", function() end)
+  end
+  local entry = published(session)
+  if not entry or entry.state ~= "ready" then
+    return true
+  end
+  local view = view_of(id)
+  local x = wheel.x or 0
+  if (view.files_w or 0) > 0 and x <= view.files_w then
+    local rows_n = view.list_rows or 0
+    local highest = math.max(1, rows_n - view.height + 1)
+    local from = list_top_of(id) or view.list_first or 1
+    set_list_top(id, math.max(1, math.min(from + delta, highest)))
+    return true
+  end
+  local parse = diff.parse(scope(id), entry.body or {}, epoch_now(id))
+  scroll_view(id, rows_in_force(parse, id), delta, false)
   return true
 end
 
@@ -1927,6 +2093,9 @@ function review.on_action(action, leave)
     page(id, in_force, 1)
   elseif action == "review.page_up" then
     page(id, in_force, -1)
+  elseif action == "review.half_down" or action == "review.half_up" then
+    local half = math.max(1, math.floor(view_of(id).height / 2))
+    scroll_view(id, in_force, action == "review.half_down" and half or -half, true)
   elseif action == "review.top" then
     move_to(id, in_force, 1)
     set_top(id, 1)
@@ -1947,7 +2116,7 @@ function review.on_action(action, leave)
     if to then
       local row = diff.file_row(in_force, to)
       if row then
-        move_to(id, in_force, row)
+        jump_to(id, in_force, row)
       else
         set_list_at(id, to)
       end
@@ -1955,15 +2124,18 @@ function review.on_action(action, leave)
   elseif action == "review.next_hunk" then
     local to = diff.jump(in_force, at, HUNK_KINDS, 1)
     if to then
-      move_to(id, in_force, to)
+      jump_to(id, in_force, to)
     end
   elseif action == "review.previous_hunk" then
     local to = diff.jump(in_force, at, HUNK_KINDS, -1)
     if to then
-      move_to(id, in_force, to)
+      jump_to(id, in_force, to)
     end
   elseif action == "review.right" then
-    set_hscroll(id, hscroll_of(id) + HSCROLL_STEP)
+    -- Stops where the widest line on screen ends, so `l` held down does not
+    -- scroll into blank columns that then take as many presses to come back.
+    local most = view_of(id).hscroll_max or 0
+    set_hscroll(id, math.max(0, math.min(hscroll_of(id) + HSCROLL_STEP, most)))
   elseif action == "review.left" then
     set_hscroll(id, math.max(0, hscroll_of(id) - HSCROLL_STEP))
   elseif action == "review.side" then
@@ -2051,7 +2223,7 @@ function review.on_action(action, leave)
       end
       to = to or hits[#hits]
     end
-    move_to(id, in_force, to)
+    jump_to(id, in_force, to)
   elseif action == "review.comment" then
     local anchor = notes.anchor_for(parse, in_force, at)
     if anchor then
