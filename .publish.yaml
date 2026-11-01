@@ -7,6 +7,7 @@ base: main
 review:
   rules:
     - README.md
+    - docs/guide.md
     - KERNEL-GAPS.md
 
 gate:
