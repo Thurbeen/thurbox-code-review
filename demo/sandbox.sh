@@ -7,7 +7,7 @@
 # thurbox of the same build, so without that a teardown would kill sessions you
 # have running.
 #
-# The pane is installed the way the README says, with `plugin install`, from a
+# The pane is installed the way the README says, with `mod install`, from a
 # clone of this repository's COMMITTED state — so what a recording shows is what
 # a user gets, not the working tree. The clone is named `thurbox-code-review`
 # because install names the directory after the source, and the pane requires its
@@ -186,20 +186,20 @@ git_demo -C "$W" commit -qm "expire cached forecasts"
 
 # Installed from committed state, under the name the pane requires itself by.
 git clone -q "$REPO" "$S/src/thurbox-code-review"
-"$CLI" plugin install "git+file://$S/src/thurbox-code-review" >/dev/null
+"$CLI" mod install "git+file://$S/src/thurbox-code-review" >/dev/null
 # This repository's agent pane replaces the bundled one, as the README's install
 # says: two `agent` panes would both load.
-rm "$XDG_CONFIG_HOME/thurbox/ui/plugins/20_agent.lua"
+rm "$XDG_CONFIG_HOME/thurbox/ui/mods/20_agent.lua"
 
 # The first launch asks whether to continue to v2 and waits for an answer. A
 # recording is about the pane, so the answer is recorded up front. So is the
 # theme, in the row the theme picker writes: thurbox's own `doom` palette, which
-# every official plugin's demo is recorded in. THEME=<name> picks another.
+# every official mod's demo is recorded in. THEME=<name> picks another.
 sqlite3 "$XDG_DATA_HOME/thurbox/thurbox.db" \
     "INSERT INTO metadata (key, value) VALUES ('v2_interface_acknowledged', '1')
      ON CONFLICT(key) DO UPDATE SET value = '1';
      INSERT INTO metadata (key, value) VALUES ('active_theme', '${THEME:-doom}')
      ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
 
-"$CLI" plugin check --text >&2
+"$CLI" mod check --text >&2
 echo "$S"

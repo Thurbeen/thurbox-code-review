@@ -4,7 +4,7 @@
 # thurbox in a tmux pane, real sessions with real worktrees and base branches,
 # driven by keys and mouse reports, with the frames captured as text.
 #
-# `plugin check` loads the interface but never calls `render`, so this is the
+# `mod check` loads the interface but never calls `render`, so this is the
 # only thing that can tell a pane that draws from a pane that throws — and the
 # only thing that can see where a key went once the kernel routed it.
 set -euo pipefail
@@ -14,8 +14,8 @@ set -euo pipefail
 # THURBOX_BIN naming that release's binaries.
 REPO_ROOT="${THURBOX_REPO:?set THURBOX_REPO to a thurbox checkout, or the ui/ and scripts/dev/lib/ of a release tag}"
 # A scratch interface: the shipped `ui/` copied out of the checkout, with this
-# repository symlinked in and named by a plugins.toml entry. Never inside either
-# working copy — a dirty tree is what makes `plugin update` refuse to move.
+# repository symlinked in and named by a mods.toml entry. Never inside either
+# working copy — a dirty tree is what makes `mod update` refuse to move.
 UI_DIR="${THURBOX_UI_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/thurbox-code-review/ui}"
 OUT="${OUT:-${XDG_CACHE_HOME:-$HOME/.cache}/thurbox-code-review/frames}"
 SOCKET="review-proof"
@@ -41,22 +41,22 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 if [ ! -d "$UI_DIR/thurbox-code-review" ]; then
   log "seeding a scratch interface at $UI_DIR"
   mkdir -p "$UI_DIR"
-  cp -r "$REPO_ROOT/ui/layout.lua" "$REPO_ROOT/ui/lib" "$REPO_ROOT/ui/plugins" "$UI_DIR"/
+  cp -r "$REPO_ROOT/ui/layout.lua" "$REPO_ROOT/ui/lib" "$REPO_ROOT/ui/mods" "$UI_DIR"/
   # The bundled agent pane goes, as the README's install says: this repository's
   # agent pane replaces it, and two `agent` panes is not the arrangement a user
   # is told to make.
-  rm "$UI_DIR/plugins/20_agent.lua"
+  rm "$UI_DIR/mods/20_agent.lua"
   ln -sfn "$HERE" "$UI_DIR/thurbox-code-review"
-  cat > "$UI_DIR/plugins.toml" <<TOML
+  cat > "$UI_DIR/mods.toml" <<TOML
 # Development spec: the working copy is symlinked in, so an edit to the
 # repository is live here without a reinstall. \`file\` is what the loader reads
-# for a pane outside \`plugins/\` — see kernel::host, the \`nested\` list.
-[[plugin]]
+# for a pane outside \`mods/\` — see kernel::host, the \`nested\` list.
+[[mod]]
 src  = "git+file://$HERE"
 file = "thurbox-code-review/plugins/20_agent.lua"
 TOML
 fi
-[ ! -e "$UI_DIR/plugins/20_agent.lua" ] || die "$UI_DIR still has the bundled agent pane — remove it or the scratch interface"
+[ ! -e "$UI_DIR/mods/20_agent.lua" ] || die "$UI_DIR still has the bundled agent pane — remove it or the scratch interface"
 
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/dev/lib/sandbox-env.sh"
@@ -155,7 +155,7 @@ git add -A && git commit -qm "move the notes, drop the old ones"
 #
 # The pane declares `capabilities = { "run" }`, and `run` is simply ABSENT until
 # the file is trusted — which is the capability model working, and which means an
-# automated proof has to grant it. There is no `thurbox-cli plugin trust`, so this
+# automated proof has to grant it. There is no `thurbox-cli mod trust`, so this
 # writes the grant `ui.json` carries: the file's absolute path against an FNV-1a
 # digest of its contents (`kernel::bundled::digest`), which is the same record the
 # Interface tab's `t` writes.

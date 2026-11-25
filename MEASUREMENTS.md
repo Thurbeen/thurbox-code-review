@@ -114,7 +114,7 @@ One render of the Agent tab, 120x40, counted with a hook on every instruction:
 About a tenth of one batch a frame, against the 200 the kernel allows a call —
 where the shipped pane's cached steady frame costs nothing. That is the price of
 Review being a tab rather than a second pane, and it is the price a kernel-side
-tab would remove (the pane would be pure again, and the review its own plugin).
+tab would remove (the pane would be pure again, and the review its own mod).
 
 ## Two scans the measurement found, and killed
 
@@ -174,7 +174,7 @@ kernel allows a call. It does not grow with the diff, because the window only
 ever hands the lexer the forty-odd lines it is about to paint.
 
 That is the number behind the design's claim that highlighting is "a property of
-the cells the plugin produces". It is not merely possible without a kernel
+the cells the mod produces". It is not merely possible without a kernel
 change; it is cheap enough that the question never comes up.
 
 ## The highlighter, and the version of it that would have killed the pane

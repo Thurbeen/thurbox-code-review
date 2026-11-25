@@ -355,7 +355,7 @@ local function expand(into, row, opts)
   -- This is where D2 is tested hardest — one logical row spanning two columns of
   -- cells — and it needed nothing new. Each half is the same gutter/sign/text it
   -- is in the unified layout, measured against half the width the kernel
-  -- resolved, and a divider between them. The plugin knows the geometry, which
+  -- resolved, and a divider between them. The mod knows the geometry, which
   -- is the whole claim of the surface.
   if row.kind == "pair" then
     local canonical = opts.canonical

@@ -1,4 +1,4 @@
--- The `text` global the plugin VM injects: `text.width`, `text.truncate`,
+-- The `text` global the mod VM injects: `text.width`, `text.truncate`,
 -- `text.pad`.
 --
 -- The interface's own `lib.widgets` measures through it (thurbox #1072), so a

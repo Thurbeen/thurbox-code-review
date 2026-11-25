@@ -1,4 +1,4 @@
--- Measures the plugin's per-frame cost in the same unit the kernel budgets in.
+-- Measures the mod's per-frame cost in the same unit the kernel budgets in.
 --
 -- `kernel::host::Budget::arm` installs a count hook every 100_000 instructions
 -- and allows `INSTRUCTION_BUDGET / 100_000` = 200 batches per call. This counts

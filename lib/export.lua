@@ -3,7 +3,7 @@
 -- This is the spec's "the review can be exported to the agent" requirement, and
 -- it is the one part of v1's export that v2 can express today: `command("copy",
 -- …)` takes a session and copies that session's terminal, so there is no way for
--- a plugin to put arbitrary text on the clipboard. v1's `y` therefore has no
+-- a mod to put arbitrary text on the clipboard. v1's `y` therefore has no
 -- equivalent here, and `KERNEL-GAPS.md` records why.
 --
 -- What is sent is deliberately NOT the diff. The agent is standing in the
