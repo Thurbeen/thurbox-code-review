@@ -218,7 +218,7 @@ git half and keep its picker.
 
 ## 6. A capability can only be granted by hand
 
-**Still open on v2.24.1.** `thurbox-cli mod` has `dir`, `new`, `check`,
+**Still open on v2.24.1, and on v3.24.0.** `thurbox-cli mod` has `dir`, `new`, `check`,
 `list`, `install`, `sync`, `update`, `remove`, `available` and `events`, and no
 `trust`; `mod list` reads trust and does not write it.
 
