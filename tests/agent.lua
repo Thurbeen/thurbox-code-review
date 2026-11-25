@@ -1,4 +1,4 @@
--- The agent pane this plugin ships: Agent / Shell / Review as three tabs of one
+-- The agent pane this mod ships: Agent / Shell / Review as three tabs of one
 -- pane, against a faked snapshot.
 --
 -- Two questions, asked of the returned node trees and of the handlers:
@@ -16,7 +16,7 @@ local UI = assert(os.getenv("UI"), "UI=")
 
 dofile(REPO .. "/tests/text.lua")
 
--- ── the environment the plugin VM provides ──────────────────────────────────
+-- ── the environment the mod VM provides ─────────────────────────────────────
 
 local roles = {}
 for _, name in ipairs({
@@ -113,7 +113,7 @@ end
 
 -- ── the two panes ───────────────────────────────────────────────────────────
 
-local shipped = assert(loadfile(UI .. "/plugins/20_agent.lua"))()
+local shipped = assert(loadfile(UI .. "/mods/20_agent.lua"))()
 local fork = assert(loadfile(REPO .. "/plugins/20_agent.lua"))()
 
 -- ── the snapshot ────────────────────────────────────────────────────────────
@@ -153,31 +153,35 @@ local function ready(files, lines)
   return { state = "ready", files = list, body = body_of(files, lines), truncated = false }
 end
 
---- The registry the kernel publishes: every plugin's declared keys, which is
+local function kernel_published_scope(declared)
+  return declared == "mod" and "plugin" or declared
+end
+
+--- The registry the kernel publishes: every mod's declared keys, which is
 --- where the strip reads its `· F8` / `· F7` hints from.
-local function registry_of(plugin)
-  local keys = { { action = "sessions.toggle_panel", key = "f9", plugin = "sessions" } }
-  for _, binding in ipairs(plugin.keys or {}) do
+local function registry_of(pane)
+  local keys = { { action = "sessions.toggle_panel", key = "f9", mod = "sessions" } }
+  for _, binding in ipairs(pane.keys or {}) do
     keys[#keys + 1] = {
       action = binding.action,
       key = binding.key,
-      plugin = plugin.name,
-      scope = binding.scope,
+      mod = pane.name,
+      scope = kernel_published_scope(binding.scope),
     }
   end
   return { keys = keys, settings = {} }
 end
 
-local function snapshot(plugin, selected)
+local function snapshot(pane, selected)
   _G.thurbox = {
     sessions = { S1, S2 },
     diffs = { s1 = ready(3, 6) },
     theme = { name = "test", roles = roles },
-    registry = registry_of(plugin),
+    registry = registry_of(pane),
     settings = {},
     hover = {},
     focus = "agent",
-    plugins = {
+    mods = {
       { name = "sessions", slot = "sessions", kind = "pane", state = "visible" },
       { name = "agent", slot = "center", kind = "pane", state = "visible" },
     },
@@ -187,11 +191,11 @@ local function snapshot(plugin, selected)
 end
 
 --- A clean slate: nothing remembered, nothing commanded.
-local function reset(plugin, selected)
+local function reset(pane, selected)
   clear(state_backing)
   clear(commands)
   store_backing.selected = nil
-  snapshot(plugin, selected)
+  snapshot(pane, selected)
 end
 
 -- ── walking the returned tree ───────────────────────────────────────────────
@@ -489,7 +493,7 @@ end
 
 print("== the centre has one occupant, so the focus ring cannot stop on a review ==")
 do
-  local manifest = assert(io.open(REPO .. "/plugin.toml")):read("a")
+  local manifest = assert(io.open(REPO .. "/mod.toml")):read("a")
   eq(
     "the manifest's pane is this agent pane",
     manifest:match('pane%s*=%s*{%s*source%s*=%s*"([^"]+)"'),
@@ -509,12 +513,12 @@ do
 
   local centre = 0
   for _, file in ipairs(panes) do
-    local plugin = assert(loadfile(REPO .. "/plugins/" .. file))()
-    if plugin.slot == "center" then
+    local pane = assert(loadfile(REPO .. "/plugins/" .. file))()
+    if pane.slot == "center" then
       centre = centre + 1
     end
   end
-  eq("one plugin names the centre slot", centre, 1)
+  eq("one mod names the centre slot", centre, 1)
   eq("it is named agent, which `session focus` addresses", fork.name, "agent")
   eq("it offers no pill: the strip is the way in", fork.pills, nil)
   check(
@@ -619,8 +623,8 @@ do
 
   --- Run one handler call on a pane from a given starting state, and return
   --- what it answered, the state it left and the commands it issued.
-  local function outcome(plugin, tab, call)
-    reset(plugin)
+  local function outcome(pane, tab, call)
+    reset(pane)
     if tab ~= "agent" then
       state_backing["tab:s1"] = tab
     end
@@ -628,7 +632,7 @@ do
     state_backing["scrollmax:s1"] = 5
     state_backing["scroll:s1#shell"] = 2
     state_backing["scrollmax:s1#shell"] = 2
-    local answer = call(plugin)
+    local answer = call(pane)
     return { answer = answer, state = deep_copy(state_backing), commands = deep_copy(commands) }
   end
 
@@ -692,7 +696,7 @@ end
 print("== Review's keys are the terminal's on the other two tabs ==")
 do
   -- The review declares `j`, `k`, `enter`, `esc`, `tab`… on the agent pane, and a
-  -- plugin-scoped key resolves for the focused plugin whichever tab is showing.
+  -- mod-scoped key resolves for the focused mod whichever tab is showing.
   -- Declining is what lets the kernel carry the key on to the pty — so every one
   -- of them must decline, change nothing and issue nothing, off the Review tab.
   for _, tab in ipairs({ "agent", "shell" }) do
@@ -728,7 +732,7 @@ end
 
 print("== a failing review body keeps the way back ==")
 do
-  -- One plugin is one error panel: a throw in the diff code would blank the
+  -- One mod is one error panel: a throw in the diff code would blank the
   -- terminal tabs with it. The review is drawn under a guard, inside the frame,
   -- so the strip — the way back to Agent — survives.
   reset(fork)

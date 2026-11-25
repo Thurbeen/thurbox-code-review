@@ -13,13 +13,13 @@
 -- shows a LIVE terminal, which cannot round-trip through Lua tables at 20fps.
 --
 -- The resolution is that `surface` is a NODE KIND, not a kernel pane. This
--- plugin places and frames it, decides which session it shows, and owns the key
+-- mod places and frames it, decides which session it shows, and owns the key
 -- rules; the kernel only fills the rect with cells. Lua does not paint a
 -- `list`'s glyphs either — same deal.
 --
--- The two views are ONE plugin because that is what v1 is: `CentralTab` selects
+-- The two views are ONE mod because that is what v1 is: `CentralTab` selects
 -- a view of a single pane, and the strip that selects it is drawn on that
--- pane's border. Modelling them as two plugins taking turns in the `switch`
+-- pane's border. Modelling them as two mods taking turns in the `switch`
 -- slot cost the strip on every tab but the agent's, a second stop in the focus
 -- ring, and a slot arbitration that existed only to referee them
 -- (v2-system-modals D4).
@@ -39,13 +39,13 @@
 local chrome = require("thurbox-code-review.lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
-local plugin_settings = require("lib.settings")
+local mod_settings = require("lib.settings")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 -- review tab: the diff, its keys and its settings.
 local review = require("thurbox-code-review.lib.review")
 
---- What this plugin is called. Declared once because the pane has to name
+--- What this mod is called. Declared once because the pane has to name
 --- ITSELF to bring itself forward (`command("focus", …)`).
 local NAME = "agent"
 
@@ -63,13 +63,13 @@ local NAME = "agent"
 --- v1 gates the pane, its chord and its tab on `[features] shell_pane`; this pane
 --- owns all three in v2, so it is the thing that has to ask.
 local function shell_enabled()
-  return plugin_settings.feature("shell_pane", true) ~= false
+  return mod_settings.feature("shell_pane", true) ~= false
 end
 
 -- review tab: `[features] code_review` gates the Review tab the way `shell_pane`
 -- gates Shell — its chip, its chord and its select action.
 local function review_enabled()
-  return plugin_settings.feature("code_review", true) ~= false
+  return mod_settings.feature("code_review", true) ~= false
 end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
@@ -558,7 +558,7 @@ end
 ---
 --- Memoized on the published registry's identity: `thurbox.registry` is a
 --- gated group, so the same table object means the same bindings — and this
---- runs from the border strip on every render, scanning every plugin's
+--- runs from the border strip on every render, scanning every mod's
 --- bindings each time.
 local shortcut_cache = { src = nil, by_action = {} }
 
@@ -635,7 +635,7 @@ end
 --- action, so a chip and the keyboard agree by construction.
 ---
 --- v1 lists a third chip here, `Review · F7`. It is absent because the review
---- plugin is: a chip whose `focus:review` role names a plugin that does not
+--- mod is: a chip whose `focus:review` role names a mod that does not
 --- exist would light up and then do nothing, which is worse than not offering
 --- it. Re-adding the pane means re-adding its chip.
 --- review tab: this fork re-adds it below, as a tab rather than a pane.
@@ -821,7 +821,7 @@ local HINT_W, HINT_H = 33, 5
 --- column padded to 8 so the keys line up.
 ---
 --- v1 opens with `Ctrl+N  New session`. It is absent because the new-session
---- plugin is: advertising a chord that resolves to nothing is worse than
+--- mod is: advertising a chord that resolves to nothing is worse than
 --- advertising nothing, and `tests/keymap.rs` asserts that chord stays
 --- unbound rather than being reused. Re-adding the wizard means re-adding its
 --- line here.
@@ -913,7 +913,7 @@ end
 
 --- Draw the Review tab: `lib/review.lua`'s body in this pane's frame.
 ---
---- Guarded, because one plugin is one error panel: a throw in the diff code
+--- Guarded, because one mod is one error panel: a throw in the diff code
 --- would otherwise blank the Agent and Shell tabs with it. The error is drawn
 --- inside the frame instead, under the strip that is the way back.
 local function review_tab(ctx, session, level, border, strip, reserved_left)
@@ -993,8 +993,8 @@ local pane = {
   -- review tab: NOT pure. The review parses a large diff a bite per render, and a
   -- pure pane is not rendered again until something it read changes.
   pure = false,
-  -- Keys this plugin does not handle go straight to the pty of whichever view
-  -- is showing. That is what makes this an ordinary plugin rather than a kernel
+  -- Keys this mod does not handle go straight to the pty of whichever view
+  -- is showing. That is what makes this an ordinary mod rather than a kernel
   -- special case: replace the file and the terminal behaviour goes with it.
   input = "session",
   order = 20,
@@ -1028,14 +1028,14 @@ local pane = {
       key = "pageup",
       action = SCROLL_UP,
       desc = "scroll the agent's output back",
-      scope = "plugin",
+      scope = "mod",
       group = "Terminal",
     },
     {
       key = "pagedown",
       action = SCROLL_DOWN,
       desc = "scroll the agent's output forward",
-      scope = "plugin",
+      scope = "mod",
       group = "Terminal",
     },
   },
@@ -1067,7 +1067,7 @@ local pane = {
     -- v1 draws neither the chevron nor the tabs on the empty welcome screen, so
     -- the strip is built only once a session exists — after the branch above.
     -- It carries the active tab, so it is the SAME strip on every tab; that is
-    -- the whole reason the views share one plugin.
+    -- the whole reason the views share one mod.
     local tab = tab_of(session.id)
     local strip, reserved_left = border_strip(width, border, tab, chrome.rule(level))
     -- review tab: the diff, inside the same frame, under the same strip.

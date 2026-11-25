@@ -2,7 +2,7 @@
 --
 -- ── Where they live, and the honest limit ───────────────────────────────────
 --
--- In `state`, which is the plugin's own store. That means a note **survives a
+-- In `state`, which is the mod's own store. That means a note **survives a
 -- reload (F10) and does not survive quitting thurbox**, because `state` is a map
 -- the kernel holds in memory for the life of the process and never writes to
 -- disk. The pane says so on screen rather than in this comment.

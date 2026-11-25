@@ -7,27 +7,26 @@ search, write notes on lines, and send the notes to the session's agent.
 
 ![The Review tab beside Agent and Shell, in thurbox's Doom theme: F8 and F7 switch tabs, Ctrl+H and Ctrl+L walk past it, a note is written on a line and sent to the agent](media/demo.gif)
 
-A plugin cannot add a tab to a pane it does not own, so this repository ships
-**its own agent pane**: thurbox's `ui/plugins/20_agent.lua` with the Review tab
+A mod cannot add a tab to a pane it does not own, so this repository ships
+**its own agent pane**: thurbox's `ui/mods/20_agent.lua` with the Review tab
 added. It **replaces** the bundled agent pane, and it cannot be combined with
 another fork of that pane.
 
 ## Install
 
-1. **Check the version.** `thurbox-cli version` must print 2.35.0 or later (CI
-   tests v2.35.2). Releases back to v2.25.0 still load the pane, without
-   v2.35's focus frame.
-2. **Install the plugin.** This clones the repository into your interface
-   directory and records it in `plugins.toml`. Nothing is run.
+1. **Check the version.** `thurbox-cli version` must print 3.24.0 or later (CI
+   tests v3.24.0).
+2. **Install the mod.** This clones the repository into your interface
+   directory and records it in `mods.toml`. Nothing is run.
 
    ```bash
-   thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+   thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review
    ```
 
-   Or add the entry to `plugins.toml` yourself and run `thurbox-cli plugin sync`:
+   Or add the entry to `mods.toml` yourself and run `thurbox-cli mod sync`:
 
    ```toml
-   [[plugin]]
+   [[mod]]
    src = "git+https://github.com/Thurbeen/thurbox-code-review"
    file = "thurbox-code-review/plugins/20_agent.lua"
    ```
@@ -35,10 +34,10 @@ another fork of that pane.
 3. **Remove the bundled agent pane.** No upgrade writes it back.
 
    ```bash
-   rm "$(thurbox-cli plugin dir --text | head -1)/plugins/20_agent.lua"
+   rm "$(thurbox-cli mod dir --text | head -1)/mods/20_agent.lua"
    ```
 
-4. **Check that exactly one agent pane loads.** `thurbox-cli plugin check`
+4. **Check that exactly one agent pane loads.** `thurbox-cli mod check`
    should list `agent` once. If it lists `agent, agent`, step 3 was skipped.
 5. **Turn it on if it is off.** In thurbox: `Ctrl+,` (or `F6`) → `]` → `j`/`k`
    to `thurbox-code-review/plugins/20_agent.lua` → `space`.
@@ -47,9 +46,9 @@ another fork of that pane.
    uncommitted changes and single commits, by running `git`.
 7. **Open the Review tab** with `F7`, a click on its chip, or `Ctrl+P` → `review`.
 
-To update: `thurbox-cli plugin update`. To remove:
-`thurbox-cli plugin remove thurbox-code-review/plugins/20_agent.lua`, then bring
-back thurbox's own pane: `Ctrl+,` → `]` → `plugins/20_agent.lua` → `r`.
+To update: `thurbox-cli mod update`. To remove:
+`thurbox-cli mod remove thurbox-code-review/plugins/20_agent.lua`, then bring
+back thurbox's own pane: `Ctrl+,` → `]` → `mods/20_agent.lua` → `r`.
 
 ## Keys
 
@@ -83,7 +82,7 @@ not a restart.
 
 ## Configuration
 
-Under the agent pane in `Ctrl+,` → Plugins:
+Under the agent pane in `Ctrl+,`:
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -100,7 +99,7 @@ way `shell_pane = false` turns off Shell.
 - [docs/guide.md](docs/guide.md): troubleshooting, upgrading from v0.1.0, review
   targets, how it is built, keeping the fork current, and developing.
 - [KERNEL-GAPS.md](KERNEL-GAPS.md): what thurbox would need to change to close
-  this plugin's gaps.
+  this mod's gaps.
 - [MEASUREMENTS.md](MEASUREMENTS.md): what the review costs per frame.
 
 ## Licence

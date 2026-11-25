@@ -6,12 +6,12 @@
 -- terminal tabs beside it.
 --
 -- v1 shipped this natively — 1,844 lines of rendering and 2,610 of state — and
--- it went with `src/ui`. This is the plugin that pays it back, and it is the
+-- it went with `src/ui`. This is the mod that pays it back, and it is the
 -- first consumer of `thurbox.diffs` anywhere.
 --
 -- ── The shape, and why it is two shapes ─────────────────────────────────────
 --
--- The pane is one plugin holding two very different things, which is design.md
+-- The pane is one mod holding two very different things, which is design.md
 -- D2 and the reason this pane is expressible at all:
 --
 --   the changed-files list is a TREE — rows with identity, so they can be
@@ -58,13 +58,13 @@ local textinput = require("lib.textinput")
 local syntax = require("thurbox-code-review.lib.syntax")
 local target = require("thurbox-code-review.lib.target")
 
---- The plugin whose settings these are: the agent pane, which declares them on
+--- The mod whose settings these are: the agent pane, which declares them on
 --- this module's behalf. Named once because the lookup and the write both need
 --- it.
 local NAME = "agent"
 
---- Prefixed, because they sit beside the agent pane's own in `Ctrl+,` →
---- Plugins and a bare `wrap` there would not say what it wraps.
+--- Prefixed, because they sit beside the agent pane's own in `Ctrl+,`, and
+--- a bare `wrap` there would not say what it wraps.
 local SETTING_PREFIX = "review_"
 
 --- Columns the changed-files list asks for, and the width below which the pane
@@ -192,7 +192,7 @@ end
 --
 -- `state` hands back a COPY on every read, so every one of these writes the
 -- whole value back. Mutating what a read returned changes nothing at all, which
--- is the first trap PLUGINS.md names.
+-- is the first trap docs/thurbox/mods.md names.
 
 local function cursor_of(id)
   return state["sel:" .. scope(id)] or 1
@@ -365,13 +365,13 @@ end
 -- resetting it there did nothing. A knob with two homes is a knob that lies in
 -- one of them.
 --
--- `command("set", { text = "<plugin>.<id>", flag = … })` is the write. It takes
+-- `command("set", { text = "<mod>.<id>", flag = … })` is the write. It takes
 -- effect a frame later, like every command, which nobody can see.
 
 local function toggle_value(id, declared)
   local registry = (thurbox and thurbox.registry and thurbox.registry.settings) or {}
   for _, entry in ipairs(registry) do
-    if entry.plugin == NAME and entry.id == SETTING_PREFIX .. id then
+    if entry.mod == NAME and entry.id == SETTING_PREFIX .. id then
       if entry.value ~= nil then
         return entry.value == true
       end
@@ -1088,7 +1088,7 @@ local function footer(width, ready, sendable, pan)
     -- Every key that changes what the BODY looks like belongs here. `w` was
     -- dropped from this list when `v` was added — replaced rather than added to
     -- — and the result is the failure this pane's own README warns about: the
-    -- key still worked, `plugin check` still passed, F1 still listed it, and
+    -- key still worked, `mod check` still passed, F1 still listed it, and
     -- there was nothing on screen to say wrapping existed. A capability nobody
     -- can find is not a capability.
     put("wrap", "w")
@@ -1194,7 +1194,7 @@ end
 ---
 --- A surface carries no per-line identity — that is the trade D2 accepts — so a
 --- click on it arrives as a coordinate, and turning a coordinate back into a
---- logical row is the plugin's job. It can do it because it OWNS the geometry:
+--- logical row is the mod's job. It can do it because it OWNS the geometry:
 --- it decided which rows went where, and this is that decision written down.
 ---
 --- Which is the answer to whether a dense pane needs a fifth node kind for
@@ -1296,7 +1296,7 @@ review.SETTINGS = {
 
 --- The review's keys, declared on the agent pane.
 ---
---- Plugin-scoped, so they resolve while the agent pane has focus on EVERY tab;
+--- Mod-scoped, so they resolve while the agent pane has focus on EVERY tab;
 --- the pane declines them off the Review tab, which is what carries `j`, `tab`
 --- or `esc` on to the terminal. `pageup` / `pagedown` are not here: the pane's
 --- own page keys are routed to the review's pages while it is showing, because

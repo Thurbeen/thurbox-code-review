@@ -1,14 +1,14 @@
 -- Syntax colouring for the diff body.
 --
 -- This file is the design's own claim being tested: *"syntax highlighting is a
--- property of the cells the plugin produces, so it can arrive without any kernel
+-- property of the cells the mod produces, so it can arrive without any kernel
 -- change — which is the point of the surface."* Nothing here asks the kernel for
 -- anything. It is a lexer and a colour table, and the cells come out different.
 --
 -- ── Why not tree-sitter, which is what neovim uses ──────────────────────────
 --
 -- It is not reachable, and not for want of trying: tree-sitter is a C library
--- loaded through FFI, and the plugin VM has `string`, `table`, `math`,
+-- loaded through FFI, and the mod VM has `string`, `table`, `math`,
 -- `coroutine` and `utf8` — no `package`, no loaders, no processes. A grammar
 -- cannot be compiled, fetched or linked from here. That is the sandbox working
 -- as designed rather than a gap to file.

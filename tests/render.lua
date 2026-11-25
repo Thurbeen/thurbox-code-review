@@ -11,7 +11,7 @@
 local REPO = assert(os.getenv("REPO"), "REPO=")
 local UI = assert(os.getenv("UI"), "UI=")
 
--- ── the environment the plugin VM provides ──────────────────────────────────
+-- ── the environment the mod VM provides ──────────────────────────────────
 
 dofile(REPO .. "/tests/text.lua")
 
@@ -95,20 +95,20 @@ local commands = {}
 _G.command = function(kind, args)
   commands[#commands + 1] = { kind = kind, args = args }
   if kind == "set" and args and args.text then
-    local plugin, id = string.match(args.text, "^(.-)%.(.+)$")
+    local mod, id = string.match(args.text, "^(.-)%.(.+)$")
     for _, entry in ipairs(settings) do
-      if entry.plugin == plugin and entry.id == id then
+      if entry.mod == mod and entry.id == id then
         entry.value = args.reset and nil or args.flag
         return
       end
     end
-    settings[#settings + 1] = { plugin = plugin, id = id, value = args.reset and nil or args.flag }
+    settings[#settings + 1] = { mod = mod, id = id, value = args.reset and nil or args.flag }
   end
 end
 
 -- ── programs, and the trust that gates them ─────────────────────────────────
 --
--- `run` is a GLOBAL that is simply absent until the plugin is trusted — that is
+-- `run` is a GLOBAL that is simply absent until the mod is trusted — that is
 -- capability-by-absence, and the pane's untrusted path is `if not run then`. So
 -- the harness has to be able to take it away, not merely to make it fail.
 
@@ -184,15 +184,15 @@ local function snapshot(diff)
     -- draws a chevron with no chord and would make that assertion vacuous.
     registry = {
       settings = settings,
-      keys = { { action = "sessions.toggle_panel", key = "f9", plugin = "sessions" } },
+      keys = { { action = "sessions.toggle_panel", key = "f9", mod = "sessions" } },
     },
     settings = {},
-    plugins = {
+    mods = {
       { name = "sessions", slot = "sessions", kind = "pane", state = "visible" },
       { name = "agent", slot = "center", kind = "pane", state = "visible" },
     },
     focus = focused_pane,
-    -- Answers to the programs THIS plugin asked for. Empty unless a test filled
+    -- Answers to the programs THIS mod asked for. Empty unless a test filled
     -- it, which is the same as a run that has not finished.
     runs = runs_backing,
   }
@@ -457,11 +457,11 @@ local function hasnt(name, text, needle)
 end
 
 local target_lib = require("thurbox-code-review.lib.target")
-local plugin = assert(loadfile(REPO .. "/plugins/20_agent.lua"))()
+local pane = assert(loadfile(REPO .. "/plugins/20_agent.lua"))()
 local CTX = { width = 120, height = 40, focused = true, elapsed = 0 }
 
 local function render(ctx)
-  return plugin.render(ctx or CTX)
+  return pane.render(ctx or CTX)
 end
 
 -- ── the states ──────────────────────────────────────────────────────────────
@@ -554,14 +554,14 @@ do
   snapshot(ready(2, 4))
   local narrow = { width = 90, height = 30, focused = true, elapsed = 0 }
   render(narrow)
-  plugin.on_action("review.top")
-  plugin.on_action("review.next")
-  plugin.on_action("review.next")
-  plugin.on_action("review.comment")
+  pane.on_action("review.top")
+  pane.on_action("review.next")
+  pane.on_action("review.next")
+  pane.on_action("review.comment")
   for _, ch in utf8.codes("check this") do
-    plugin.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
+    pane.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
   end
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   has("a narrow pane with a note offers send", joined(render(narrow)), "send")
   forget("s1")
   diff.forget("s1")
@@ -615,13 +615,13 @@ do
   -- version made those rows inert instead, which is honest and useless.
   check(
     "clicking an unreached file is accepted",
-    plugin.on_click({ id = "file:pkg/file30.txt", role = "row" })
+    pane.on_click({ id = "file:pkg/file30.txt", role = "row" })
   )
   -- Asserted on the SELECTED body line, not on the file list (which names every
   -- file whether or not the cursor is there) and not by re-parsing here.
   --
   -- Calling `diff.parse` from the test to check the row index is what NOT to do:
-  -- the epoch is the plugin's, so guessing it forks the cache and the two parses
+  -- the epoch is the mod's, so guessing it forks the cache and the two parses
   -- restart each other forever, and nothing ever finishes. The pane's own output
   -- is the oracle.
   local landed = false
@@ -693,7 +693,7 @@ do
 
   -- The join that matters: clicking the SECOND row must reach the file that row
   -- names, not the second file of the body.
-  check("clicking is by path", plugin.on_click({ id = "file:pkg/file2.txt", role = "row" }))
+  check("clicking is by path", pane.on_click({ id = "file:pkg/file2.txt", role = "row" }))
   has("and lands on the file that was named", selected_line(render()) or "", "file2.txt")
 
   diff.forget("s1")
@@ -729,26 +729,26 @@ do
 
   eq("it starts following the body", highlighted(), nil)
 
-  check("tab moves on", plugin.on_action("review.next_file"))
+  check("tab moves on", pane.on_action("review.next_file"))
   eq("onto a file the body does not carry", highlighted(), "pkg/file2.txt")
-  check("and again", plugin.on_action("review.next_file"))
+  check("and again", pane.on_action("review.next_file"))
   eq("to the last listed file", highlighted(), "pkg/file3.txt")
-  check("and stops at the end", plugin.on_action("review.next_file"))
+  check("and stops at the end", pane.on_action("review.next_file"))
   eq("rather than wrapping", highlighted(), "pkg/file3.txt")
 
   -- The property that keeps this from becoming a second thing to track: ANY
   -- movement of the body puts the list back in step with it.
-  check("moving the body", plugin.on_action("review.next"))
+  check("moving the body", pane.on_action("review.next"))
   eq("puts the list back to following", highlighted(), nil)
 
   -- And a file the body DOES carry moves both, so they never disagree by accident.
-  plugin.on_action("review.previous_file")
+  pane.on_action("review.previous_file")
   eq("stepping back onto a covered file follows the body", highlighted(), nil)
 
   -- Marking follows the list, so a file with no patch can still be ticked off.
-  plugin.on_action("review.next_file")
+  pane.on_action("review.next_file")
   eq("the list is on the uncovered file", highlighted(), "pkg/file2.txt")
-  plugin.on_action("review.mark")
+  pane.on_action("review.mark")
   local marks = state_backing["marks:s1"] or {}
   check("and marking it works", marks["pkg/file2.txt"] == true)
   has("the tick is drawn", joined(render()), "✓")
@@ -766,7 +766,7 @@ do
   local before = surface_cells(render()) or {}
   check("unified draws rows", #before > 0)
 
-  check("v switches layout", plugin.on_action("review.side"))
+  check("v switches layout", pane.on_action("review.side"))
   local tree = render()
   local after = surface_cells(tree) or {}
 
@@ -812,7 +812,7 @@ do
   -- Merging means fewer rows, which means `j` moves once per PAIR — the rule.
   check("the paired body is shorter", #after < #before, #after .. " vs " .. #before)
 
-  check("v switches back", plugin.on_action("review.side"))
+  check("v switches back", pane.on_action("review.side"))
   eq("and the layout is unified again", #(surface_cells(render()) or {}), #before)
 
   diff.forget("s1")
@@ -822,13 +822,13 @@ print("== the body is clickable, without a fifth node kind ==")
 do
   -- The question side-by-side was meant to settle: does a dense pane need a node
   -- kind with per-line identity? It does not. A click on a node without
-  -- identity reaches the pane in the pane's own coordinates, and the plugin can
+  -- identity reaches the pane in the pane's own coordinates, and the mod can
   -- resolve those because it decided the geometry.
   local diff = require("thurbox-code-review.lib.diff")
   diff.forget("s1")
   snapshot(ready(3, 6))
   render()
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
 
   local body
   walk(render(), function(item)
@@ -843,13 +843,13 @@ do
   -- Click ten lines down and the cursor lands on whatever was drawn there. Pane
   -- coordinates: the border is row 0, so the body's tenth line is y = 10.
   local before = selected_line(render())
-  check("clicking the body is handled", plugin.on_click({ x = 40, y = 10 }))
+  check("clicking the body is handled", pane.on_click({ x = 40, y = 10 }))
   local after = selected_line(render())
   check("and the selection moved", before ~= after, tostring(before) .. " -> " .. tostring(after))
 
   -- A click past the drawn rows is declined rather than guessed at.
-  check("a click below the content is declined", plugin.on_click({ x = 40, y = 9999 }) == false)
-  check("and so is a click on the list's blank tail", plugin.on_click({ x = 3, y = 30 }) == false)
+  check("a click below the content is declined", pane.on_click({ x = 40, y = 9999 }) == false)
+  check("and so is a click on the list's blank tail", pane.on_click({ x = 3, y = 30 }) == false)
 
   diff.forget("s1")
 end
@@ -860,7 +860,7 @@ do
   diff.forget("s1")
   snapshot(ready(3, 5))
   render()
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
 
   local function body_lines()
     return #(surface_cells(render()) or {})
@@ -890,34 +890,34 @@ do
   )
 
   -- `enter` folds the file the cursor is on.
-  check("enter folds", plugin.on_action("review.find_commit"))
+  check("enter folds", pane.on_action("review.find_commit"))
   local after = body_lines()
   check("the body is shorter", after < whole, after .. " vs " .. whole)
   check("and the header says so", (header_of("pkg/file1.txt") or ""):find("▸", 1, true) ~= nil)
   check("the file is still listed", joined(render()):find("file1.txt", 1, true) ~= nil)
 
-  check("enter unfolds", plugin.on_action("review.find_commit"))
+  check("enter unfolds", pane.on_action("review.find_commit"))
   eq("back to the whole body", body_lines(), whole)
 
   -- v1's rule: `reviewed XOR override`. Marking folds; the override then lets
   -- you peek into a marked file WITHOUT unmarking it, which is the whole reason
   -- two sets exist instead of one.
-  check("marking it", plugin.on_action("review.mark"))
+  check("marking it", pane.on_action("review.mark"))
   local marked = header_of("pkg/file1.txt") or ""
   check("shows the tick", marked:find("✓", 1, true) ~= nil)
   check("and folds it", marked:find("▸", 1, true) ~= nil)
   check("shortening the body", body_lines() < whole)
 
-  check("peeking into it", plugin.on_action("review.find_commit"))
+  check("peeking into it", pane.on_action("review.find_commit"))
   local peeked = header_of("pkg/file1.txt") or ""
   check("keeps the tick", peeked:find("✓", 1, true) ~= nil, peeked)
   check("while unfolding", peeked:find("▾", 1, true) ~= nil, peeked)
   eq("with the whole body back", body_lines(), whole)
 
   -- Folding composes with the layout rather than being a third view.
-  plugin.on_action("review.find_commit") -- fold again
+  pane.on_action("review.find_commit") -- fold again
   local folded_unified = body_lines()
-  plugin.on_action("review.side")
+  pane.on_action("review.side")
   local folded_side = body_lines()
   check(
     "still folded side by side",
@@ -928,7 +928,7 @@ do
     "and file1 is still collapsed",
     (header_of("pkg/file1.txt") or ""):find("▸", 1, true) ~= nil
   )
-  plugin.on_action("review.side")
+  pane.on_action("review.side")
 
   diff.forget("s1")
 end
@@ -937,7 +937,7 @@ print("== every view toggle is advertised ==")
 do
   -- The guard for what went wrong when `v` was added: `w` was replaced in the
   -- footer rather than joined by it, so wrapping worked and nothing on screen
-  -- said so. Nothing failed — the key was declared, F1 listed it, `plugin check`
+  -- said so. Nothing failed — the key was declared, F1 listed it, `mod check`
   -- passed — which is exactly why this needs a test rather than care.
   local diff = require("thurbox-code-review.lib.diff")
   diff.forget("s1")
@@ -945,7 +945,7 @@ do
   local drawn = joined(render())
 
   local declared = {}
-  for _, entry in ipairs(plugin.keys) do
+  for _, entry in ipairs(pane.keys) do
     declared[entry.key] = entry.action
   end
 
@@ -979,16 +979,16 @@ do
   end
 
   snapshot(ready(2, 3))
-  plugin.on_action("review.open")
+  pane.on_action("review.open")
   eq("the open key toggles back to the agent tab", state_backing["tab:s1"], nil)
-  plugin.on_action("review.open")
+  pane.on_action("review.open")
   eq("and in again", state_backing["tab:s1"], "review")
 
   -- `esc` and a send leave the same way, so the exits cannot disagree.
-  plugin.on_action("review.close")
+  pane.on_action("review.close")
   eq("esc leaves onto the agent tab", state_backing["tab:s1"], nil)
   state_backing["tab:s1"] = "review"
-  plugin.on_action("review.send")
+  pane.on_action("review.send")
   eq("send leaves onto the agent tab, to watch it read", state_backing["tab:s1"], nil)
 
   local elsewhere = nil
@@ -1047,7 +1047,7 @@ do
   forget("s1")
   snapshot(ready(2, 4))
   render()
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
 
   local function composing_now()
     return state_backing["compose:s1"] ~= nil
@@ -1057,14 +1057,14 @@ do
   --- does — through `on_key`, which is the only route a character has.
   local function type_in(text)
     for _, ch in utf8.codes(text) do
-      plugin.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
+      pane.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
     end
   end
 
   -- Move onto a body line, then note it.
-  plugin.on_action("review.next")
-  plugin.on_action("review.next")
-  check("c opens the composer", plugin.on_action("review.comment"))
+  pane.on_action("review.next")
+  pane.on_action("review.next")
+  check("c opens the composer", pane.on_action("review.comment"))
   has("which says what is being noted", joined(render()), "note on")
   has("and how long it lasts, where you are typing", joined(render()), "lost when thurbox quits")
 
@@ -1073,8 +1073,8 @@ do
   check("the field is an `input` node", used.input == true)
 
   type_in("this looks wrong")
-  check("⇥ cycles the classification", plugin.on_action("review.next_file"))
-  check("↵ saves", plugin.on_action("review.find_commit"))
+  check("⇥ cycles the classification", pane.on_action("review.next_file"))
+  check("↵ saves", pane.on_action("review.find_commit"))
 
   local written = notes.all(state, "s1")
   eq("one note", #written, 1)
@@ -1104,19 +1104,19 @@ do
   check("found the row", at ~= nil)
   state_backing["sel:s1" .. DEFAULT_SCOPE] = nil
   for _ = 1, at - 1 do
-    plugin.on_action("review.next")
+    pane.on_action("review.next")
   end
-  check("↵ on a note opens it for editing", plugin.on_action("review.find_commit"))
+  check("↵ on a note opens it for editing", pane.on_action("review.find_commit"))
   has("with the compose strip saying so", joined(render()), "editing note on")
   type_in("!")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   eq("still one note", #notes.all(state, "s1"), 1)
   eq("with the edit applied", notes.all(state, "s1")[1].text, "this looks wrong!")
 
   -- A summary note anchors to the review, not a file.
-  check("s opens a summary", plugin.on_action("review.summary"))
+  check("s opens a summary", pane.on_action("review.summary"))
   type_in("overall fine")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   local all = notes.all(state, "s1")
   eq("two notes now", #all, 2)
   eq("the second is on the review", all[2].kind, "review")
@@ -1126,7 +1126,7 @@ do
   for index = #commands, 1, -1 do
     commands[index] = nil
   end
-  plugin.on_action("review.send")
+  pane.on_action("review.send")
   eq("sending shows the agent tab, to watch it read", state_backing["tab:s1"], nil)
   -- Back onto the review, as F7 would, for the blocks below that keep using it.
   state_backing["tab:s1"] = "review"
@@ -1150,9 +1150,9 @@ do
   has("with the summary note", sent or "", "overall fine")
 
   -- Cancelling leaves nothing behind.
-  plugin.on_action("review.comment")
+  pane.on_action("review.comment")
   type_in("never mind")
-  plugin.on_action("review.close")
+  pane.on_action("review.close")
   eq("esc discards", #notes.all(state, "s1"), 2)
 
   -- `x` deletes the note under the cursor.
@@ -1165,9 +1165,9 @@ do
     end
   end
   for _ = 1, (note_at or 1) - 1 do
-    plugin.on_action("review.next")
+    pane.on_action("review.next")
   end
-  check("x deletes", plugin.on_action("review.delete"))
+  check("x deletes", pane.on_action("review.delete"))
   eq("one note left", #notes.all(state, "s1"), 1)
   eq("and it is the summary", notes.all(state, "s1")[1].kind, "review")
 
@@ -1175,17 +1175,17 @@ do
   -- the time it writes a note, and the one where the note vanished.
   forget("s1")
   render()
-  plugin.on_action("review.top")
-  plugin.on_action("review.mark")
+  pane.on_action("review.top")
+  pane.on_action("review.mark")
   local marked_path = nil
   for path in pairs(state_backing["marks:s1"] or {}) do
     marked_path = path
   end
   check("a file is marked", marked_path ~= nil)
-  plugin.on_action("review.comment")
+  pane.on_action("review.comment")
   check("the composer opens on a marked file", composing_now())
   type_in("noted on a folded file")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   eq("the note saves", #notes.all(state, "s1"), 1)
   local seen = false
   for _, line in ipairs(body_texts(render())) do
@@ -1206,13 +1206,13 @@ do
   -- saves, exports, and is invisible.
   forget("s1")
   render()
-  plugin.on_action("review.top")
-  plugin.on_action("review.next_file") -- onto the SECOND file
-  plugin.on_action("review.mark") -- fold that one
-  plugin.on_action("review.previous_file") -- back to the first, unfolded
-  plugin.on_action("review.comment")
+  pane.on_action("review.top")
+  pane.on_action("review.next_file") -- onto the SECOND file
+  pane.on_action("review.mark") -- fold that one
+  pane.on_action("review.previous_file") -- back to the first, unfolded
+  pane.on_action("review.comment")
   type_in("on an unfolded file, with another folded")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   local drawn = false
   for _, line in ipairs(body_texts(render())) do
     if line:find("on an unfolded file", 1, true) then
@@ -1227,13 +1227,13 @@ do
   -- (path, side, number), so it survives; asserted rather than assumed.
   forget("s1")
   render()
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
   for _ = 1, 3 do
-    plugin.on_action("review.next") -- onto a body line
+    pane.on_action("review.next") -- onto a body line
   end
-  plugin.on_action("review.comment")
+  pane.on_action("review.comment")
   type_in("right under this line")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
 
   --- The body line before the note, in whatever layout is on.
   local function line_above_note()
@@ -1255,25 +1255,25 @@ do
     tostring(unified_above)
   )
 
-  plugin.on_action("review.side")
+  pane.on_action("review.side")
   local side_above = line_above_note()
   check(
     "side by side, it is still under a line",
     (side_above or ""):find("old line", 1, true) ~= nil,
     tostring(side_above)
   )
-  plugin.on_action("review.side")
+  pane.on_action("review.side")
 
   -- A SUMMARY note belongs to no file, so the fold filter has to keep it when
   -- anything is folded — which is the state a reviewer is most likely to be
   -- writing one in.
   forget("s1")
   render()
-  plugin.on_action("review.top")
-  plugin.on_action("review.mark") -- fold something
-  plugin.on_action("review.summary")
+  pane.on_action("review.top")
+  pane.on_action("review.mark") -- fold something
+  pane.on_action("review.summary")
   type_in("overall this is fine")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   local summary_shown = false
   for _, line in ipairs(body_texts(render())) do
     if line:find("overall this is fine", 1, true) then
@@ -1285,15 +1285,15 @@ do
   -- With a search still open, which is the state the render proof reaches by the
   -- time it writes one — and the state that showed the note never saving.
   forget("s1")
-  plugin.on_action("review.find")
+  pane.on_action("review.find")
   for _, ch in utf8.codes("greet") do
-    plugin.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
+    pane.on_key({ char = utf8.char(ch), key = utf8.char(ch) })
   end
-  plugin.on_action("review.find_commit") -- commit the query, bar stays open
-  plugin.on_action("review.comment")
+  pane.on_action("review.find_commit") -- commit the query, bar stays open
+  pane.on_action("review.comment")
   check("the composer opens with a search open", composing_now())
   type_in("noted while searching")
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   eq("and the note saves", #notes.all(state, "s1"), 1)
 
   forget("s1")
@@ -1315,7 +1315,7 @@ do
   eq("nothing was run for the kernel's own diff", programs_asked(), "")
   has("and the header names its range", joined(render()), "main..HEAD")
 
-  check("t opens the picker", plugin.on_action("review.target"))
+  check("t opens the picker", pane.on_action("review.target"))
   local shown = joined(render())
   has("it asks what to review", shown, "Review what?")
   has("working changes are offered", shown, "uncommitted changes")
@@ -1331,18 +1331,18 @@ do
 
   -- `t` opens ON the row in force, so `t ↵` changes nothing — which is what
   -- makes `t` safe to press just to find out what you are looking at.
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.find_commit")
   hasnt("↵ on the row it opened on is a no-op", joined(render()), "Review what?")
   has("and the target did not move", joined(render()), "main..HEAD")
-  plugin.on_action("review.target")
+  pane.on_action("review.target")
 
   -- Choosing one that needs trust does NOT switch to it: it would fail, and a
   -- picker that lets you pick a broken thing is worse than one that says so.
-  plugin.on_action("review.top")
-  check("↵ on an untrusted choice is declined", plugin.on_action("review.find_commit"))
+  pane.on_action("review.top")
+  check("↵ on an untrusted choice is declined", pane.on_action("review.find_commit"))
   has("so the picker stays open", joined(render()), "Review what?")
 
-  check("esc closes it", plugin.on_action("review.close"))
+  check("esc closes it", pane.on_action("review.close"))
   hasnt("and the diff is back", joined(render()), "Review what?")
   eq("still nothing was run", programs_asked(), "")
 end
@@ -1355,7 +1355,7 @@ do
   snapshot(ready(2, 3))
   render()
 
-  check("t opens the picker", plugin.on_action("review.target"))
+  check("t opens the picker", pane.on_action("review.target"))
   render()
   -- Opening it is what asks for the commit list, and not before.
   has("the picker asks git for the log", programs_asked(), " log --no-color")
@@ -1378,10 +1378,10 @@ do
   has("and a merge is labelled", listed, "merge")
 
   -- Down past working and branch, onto the first commit.
-  plugin.on_action("review.top")
-  plugin.on_action("review.next")
-  plugin.on_action("review.next")
-  check("↵ picks it", plugin.on_action("review.find_commit"))
+  pane.on_action("review.top")
+  pane.on_action("review.next")
+  pane.on_action("review.next")
+  check("↵ picks it", pane.on_action("review.find_commit"))
   hasnt("the picker closes", joined(render()), "Review what?")
 
   local head = joined(render())
@@ -1431,10 +1431,10 @@ do
   hasnt("not the kernel's", lines, "new line 1 of file 1")
 
   -- Back to the branch, which is the kernel's and costs nothing.
-  plugin.on_action("review.target")
-  plugin.on_action("review.top") -- working changes, which need a run
-  plugin.on_action("review.next") -- the branch, which is the kernel's
-  plugin.on_action("review.find_commit")
+  pane.on_action("review.target")
+  pane.on_action("review.top") -- working changes, which need a run
+  pane.on_action("review.next") -- the branch, which is the kernel's
+  pane.on_action("review.find_commit")
   local back = joined(render())
   -- A tree again: `pkg/` heads the group and the leaf is the row.
   has("switching back reaches the kernel's diff", back, "file1.txt")
@@ -1577,7 +1577,7 @@ do
   render()
 
   for _ = 1, 8 do
-    plugin.on_action("review.next")
+    pane.on_action("review.next")
   end
   local moved = state_backing["sel:s1" .. DEFAULT_SCOPE]
   check("the cursor moved on the branch", (moved or 1) > 1)
@@ -1621,7 +1621,7 @@ end
 local function wheel(up, x, times)
   local handled = true
   for _ = 1, times or 1 do
-    handled = plugin.on_scroll({ up = up, x = x, y = 10 }) and handled
+    handled = pane.on_scroll({ up = up, x = x, y = 10 }) and handled
     render()
   end
   return handled
@@ -1642,7 +1642,7 @@ do
   -- The first line of the body, in pane coordinates. A file row reports y = 0
   -- in its own; this must not be mistaken for one.
   local was = top_now()
-  plugin.on_scroll({ up = false, x = BODY_X, y = 1 })
+  pane.on_scroll({ up = false, x = BODY_X, y = 1 })
   render()
   check("a tick on the body's first line scrolls the body", top_now() > was)
 
@@ -1669,7 +1669,7 @@ do
   eq("the list starts at the top", first, "file:pkg/file1.txt")
 
   -- Over a file row the report is in the ROW's coordinates: y is 0.
-  check("a tick on a file row is handled", plugin.on_scroll({ up = false, x = 5, y = 0 }))
+  check("a tick on a file row is handled", pane.on_scroll({ up = false, x = 5, y = 0 }))
   render()
   check("and scrolls the list", file_ids(render())[1] ~= first, file_ids(render())[1])
   eq("not the body", top_now(), 1)
@@ -1691,7 +1691,7 @@ do
 
   -- Moving the body brings the list back to the file you are in.
   wheel(false, LIST_X, 200)
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
   render()
   eq("the list follows the body again", file_ids(render())[1], "file:pkg/file1.txt")
   forget("s1")
@@ -1705,7 +1705,7 @@ do
   check(
     "d is declared",
     (function()
-      for _, binding in ipairs(plugin.keys) do
+      for _, binding in ipairs(pane.keys) do
         if binding.key == "d" and binding.action == "review.half_down" then
           return true
         end
@@ -1716,7 +1716,7 @@ do
   check(
     "u is declared",
     (function()
-      for _, binding in ipairs(plugin.keys) do
+      for _, binding in ipairs(pane.keys) do
         if binding.key == "u" and binding.action == "review.half_up" then
           return true
         end
@@ -1725,23 +1725,23 @@ do
     end)()
   )
 
-  check("d is handled", plugin.on_action("review.half_down"))
+  check("d is handled", pane.on_action("review.half_down"))
   render()
   eq("d moves the view half a body", top_now(), 1 + math.floor(BODY_H / 2))
   eq("and the cursor with it", cursor_now(), 1 + math.floor(BODY_H / 2))
-  plugin.on_action("review.half_up")
+  pane.on_action("review.half_up")
   render()
   eq("u comes back", top_now(), 1)
-  plugin.on_action("review.half_up")
+  pane.on_action("review.half_up")
   render()
   eq("and clamps at the top", top_now(), 1)
 
-  plugin.on_action("review.page_down")
+  pane.on_action("review.page_down")
   render()
   eq("a page moves the view a body less one line", top_now(), BODY_H)
 
   for _ = 1, 20 do
-    plugin.on_action("review.half_down")
+    pane.on_action("review.half_down")
   end
   render()
   eq("the view clamps at the last full page", top_now(), ROWS_3x30 - BODY_H + 1)
@@ -1754,15 +1754,15 @@ do
   forget("s1")
   snapshot(ready(3, 30))
   render()
-  plugin.on_action("review.next_file")
+  pane.on_action("review.next_file")
   local lines = body_texts(render())
   has("tab lands with the file's header on the first line", lines[1], "pkg/file2.txt")
-  plugin.on_click({ id = "file:pkg/file3.txt", role = "row" })
+  pane.on_click({ id = "file:pkg/file3.txt", role = "row" })
   lines = body_texts(render())
   has("so does a click in the list", lines[1], "pkg/file3.txt")
-  plugin.on_action("review.top")
-  plugin.on_action("review.next_hunk")
-  plugin.on_action("review.next_hunk")
+  pane.on_action("review.top")
+  pane.on_action("review.next_hunk")
+  pane.on_action("review.next_hunk")
   lines = body_texts(render())
   has("and a hunk jump below the fold", lines[1], "pkg/file2.txt")
   forget("s1")
@@ -1776,7 +1776,7 @@ do
   entry.body[#entry.body] = "+" .. long
   snapshot(entry)
   render()
-  plugin.on_action("review.bottom")
+  pane.on_action("review.bottom")
   local function last()
     local lines = body_texts(render())
     for index = #lines, 1, -1 do
@@ -1788,7 +1788,7 @@ do
   end
   check("a cut line ends in ›", last():find("›%s*$") ~= nil, last())
   for _ = 1, 100 do
-    plugin.on_action("review.right")
+    pane.on_action("review.right")
   end
   local hscroll = state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0
   check("h/l stop where the longest line ends", hscroll <= 300 and hscroll > 200, hscroll)
@@ -1806,17 +1806,17 @@ do
   entry.body[#entry.body] = "+" .. string.rep("y", 300)
   snapshot(entry)
   render()
-  plugin.on_action("review.bottom")
+  pane.on_action("review.bottom")
   render()
   for _ = 1, 100 do
-    plugin.on_action("review.right")
+    pane.on_action("review.right")
   end
   render()
   local far = state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0
   check("scrolled right", far > 100, far)
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
   render()
-  plugin.on_action("review.right")
+  pane.on_action("review.right")
   eq(
     "with only short lines on screen, l keeps the column",
     state_backing["hscroll:s1" .. DEFAULT_SCOPE] or 0,
@@ -1830,13 +1830,13 @@ do
   forget("s1")
   snapshot(ready(3, 30))
   render()
-  plugin.on_action("review.top")
+  pane.on_action("review.top")
   render()
-  plugin.on_action("review.target")
+  pane.on_action("review.target")
   render()
-  check("a blank click is declined", plugin.on_click({ x = 60, y = 10 }) == false)
+  check("a blank click is declined", pane.on_click({ x = 60, y = 10 }) == false)
   eq("and the diff's cursor did not move", cursor_now(), 1)
-  plugin.on_action("review.close")
+  pane.on_action("review.close")
   forget("s1")
 end
 
@@ -1850,7 +1850,7 @@ do
   local text = joined(tree)
   has("still says how to move", text, "j/k move")
   has("and how to scroll", text, "d/u scroll")
-  check("a tick anywhere scrolls the body", plugin.on_scroll({ up = false, x = 3, y = 5 }))
+  check("a tick anywhere scrolls the body", pane.on_scroll({ up = false, x = 3, y = 5 }))
   render(narrow)
   check("which moved", top_now() > 1, top_now())
   check("with the cursor on screen", selected_line(render(narrow)) ~= nil)
@@ -1865,7 +1865,7 @@ do
     theme = { name = "t", roles = roles },
     registry = {
       settings = settings,
-      keys = { { action = "sessions.toggle_panel", key = "f9", plugin = "sessions" } },
+      keys = { { action = "sessions.toggle_panel", key = "f9", mod = "sessions" } },
     },
   }
   store_backing.selected = nil

@@ -1,10 +1,10 @@
-# The code-review plugin: thurbox's agent pane, with a Review tab beside Agent and
+# The code-review mod: thurbox's agent pane, with a Review tab beside Agent and
 # Shell.
 #
-# This plugin is several files — the pane and the modules it requires — so it is
+# This mod is several files — the pane and the modules it requires — so it is
 # installed by CLONING it:
 #
-#     thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+#     thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review
 #
 # The clone lands at `<interface dir>/thurbox-code-review/`, keeps its `.git` (so
 # `update` is a fetch and your edits are protected), and `pane.source` below names
@@ -12,8 +12,8 @@
 #
 # The pane is a fork of the agent pane thurbox ships, and it REPLACES it: both are
 # named `agent` and both occupy the `center` slot. `install` does not remove the
-# bundled `plugins/20_agent.lua` — deleting (or turning off) that file is the
-# README's install step 3, and `plugin check` then loads one `agent`.
+# bundled `mods/20_agent.lua` — deleting (or turning off) that file is the
+# README's install step 3, and `mod check` then loads one `agent`.
 #
 # The modules are NOT listed as `[[module]]`. That list is for the file-by-file
 # delivery path, which copies each file to a destination in the interface
@@ -33,15 +33,14 @@ name = "code-review"
 description = "thurbox's agent pane with a Review tab: a session's diff, reviewable beside its terminal"
 version = "v0.3.0"
 
-# The agent pane is vendored from thurbox v2.35.2, and CI tests v2.35.2. v2.35 is
-# the floor for its LOOK: that release's focus language (a thick, marked frame on
-# the focused pane) needs `lib/chrome` names and a `thick` border that do not
-# exist before it. This is advisory — thurbox records it and does not enforce it
-# — so below v2.35 the pane still loads and draws, in the rounded, unmarked frame
-# the older release's own panes have (`lib/chrome.lua`); it has been tested back
-# to v2.25.0. The review needs `store.selected`-driven diffs with `base_branch` on
-# the session row, a file list built independently of the capped body, frame
+# v3.24 is the floor: it is the first release that reads this `mod.toml` and
+# delivers the pane under `mods/`, and the pane is written in the `mod`
+# spellings v3.21 introduced (`scope = "mod"`, the registry's `mod` field). CI
+# tests v3.24.0. The agent pane is vendored from thurbox v2.35.2; its look needs
+# that release's `lib/chrome` names and `thick` border, which v3.24 still has.
+# The review needs `store.selected`-driven diffs with `base_branch` on the
+# session row, a file list built independently of the capped body, frame
 # overlays, and `run` with `thurbox.runs`.
-requires_thurbox = ">=2.35.0"
+requires_thurbox = ">=3.24.0"
 
-pane = { source = "plugins/20_agent.lua", path = "plugins/20_agent.lua" }
+pane = { source = "plugins/20_agent.lua", path = "mods/20_agent.lua" }

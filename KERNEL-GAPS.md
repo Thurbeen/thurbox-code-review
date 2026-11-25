@@ -4,10 +4,10 @@ In the order **using** the pane made me want them, which is not the order a
 feature list would put them in — see the note on the target picker at the end.
 Each names its call site and the smallest change that would do it, so this is a
 patch someone could write rather than a wish. None of them is made here: a
-kernel change is not a plugin's to make unasked, and faking one in `state` would
+kernel change is not a mod's to make unasked, and faking one in `state` would
 look like it worked.
 
-Written against the v2 plugin kernel at `962aef7`, and **re-checked against
+Written against the v2 mod kernel at `962aef7`, and **re-checked against
 thurbox v2.24.1** (2026-09-15) — each section says what that check found.
 
 ---
@@ -15,7 +15,7 @@ thurbox v2.24.1** (2026-09-15) — each section says what that check found.
 ## 1. Review comments are stored and not published — the big one
 
 **Still open on v2.24.1.** Nothing under `thurbox.review`, no `review`
-command, and `state` still "survives a reload; not a restart" (PLUGINS.md).
+command, and `state` still "survives a reload; not a restart" (docs/thurbox/mods.md).
 
 v1's storage survived the deletion of its UI, complete and unused:
 
@@ -80,14 +80,14 @@ anywhere else. So `c` and `s` are declared, listed in `F1`, and say this.
 
 ---
 
-## 2. A plugin cannot put text on the clipboard
+## 2. A mod cannot put text on the clipboard
 
 **Still open on v2.24.1.** `Command::Copy` is still `{ session }` only
 (`src/kernel/command/mod.rs`).
 
 v1's `y` copied the review as markdown. `Command::Copy` takes `{ session }` and
 copies **that session's terminal**, so there is no spelling of "copy this text"
-for a plugin at all (`src/kernel/command.rs`, `Command::Copy { session }`).
+for a mod at all (`src/kernel/command.rs`, `Command::Copy { session }`).
 
 `e` — send the review to the agent via `command("send", …)` — works today and is
 what this pane offers instead. It is not the same thing: `send` types into the
@@ -139,8 +139,8 @@ and pure —
 - `git::list_commits_on(host, worktree, base)`
 
 — and `DiffStore` calls the first two already, choosing between them by whether
-`base_branch` is set. What is missing is a way for a plugin to *ask* for one.
-Retargeting is a kernel read, not a plugin decision, until the store takes a
+`base_branch` is set. What is missing is a way for a mod to *ask* for one.
+Retargeting is a kernel read, not a mod decision, until the store takes a
 target.
 
 The change is a target on the request and on the key:
@@ -204,7 +204,7 @@ What is still open is the rest of this section: `command("diff", …)` takes no
 target, so the picker's other targets still come from `run`.
 
 **What is still worse than the kernel doing it.** A run answer is keyed
-`(plugin, key)` and evicted only when the plugin goes, so visiting N commits
+`(mod, key)` and evicted only when the mod goes, so visiting N commits
 retains up to N x 256 KiB for the life of the process (30 commits is ~7.5 MB
 against a 256 MiB limit). The key has to name the target — one key reused across
 targets would serve the previous commit's diff while the new one ran, and no
@@ -218,15 +218,15 @@ git half and keep its picker.
 
 ## 6. A capability can only be granted by hand
 
-**Still open on v2.24.1.** `thurbox-cli plugin` has `dir`, `new`, `check`,
+**Still open on v2.24.1, and on v3.24.0.** `thurbox-cli mod` has `dir`, `new`, `check`,
 `list`, `install`, `sync`, `update`, `remove`, `available` and `events`, and no
-`trust`; `plugin list` reads trust and does not write it.
+`trust`; `mod list` reads trust and does not write it.
 
 `run` is absent until the file is trusted, which is the model working. But trust
 is written by the Interface tab's `t` and by nothing else — there is no
-`thurbox-cli plugin trust <path>`.
+`thurbox-cli mod trust <path>`.
 
-The consequence is narrow and real: **a plugin that declares a capability cannot
+The consequence is narrow and real: **a mod that declares a capability cannot
 be exercised by an automated test**. `tests/render-proof.sh` drives a real
 thurbox in a real terminal, and to reach the picker at all it has to write the
 grant into `$XDG_CONFIG_HOME/thurbox-dev/ui.json` itself — computing the FNV-1a
@@ -234,9 +234,9 @@ digest that `kernel::bundled::digest` computes, and depending on the bare-string
 grant form that `read_overrides` accepts. That is a test reaching into a private
 file format, and it will break silently the day the format moves.
 
-`thurbox-cli plugin trust <file>` (and `untrust`) would fix it, and would also
+`thurbox-cli mod trust <file>` (and `untrust`) would fix it, and would also
 serve the scripted-setup case — a machine provisioned from a config repository
-cannot press `t`. `plugin list --json` already reports `capabilities`, so the
+cannot press `t`. `mod list --json` already reports `capabilities`, so the
 listing half exists.
 
 ---
@@ -247,7 +247,7 @@ listing half exists.
 `CHORDS_AWAITING_THEIR_PANE` and asserts they resolve to nothing, "until that pane
 is back". This pane claims both. Unchanged on v2.24.1.
 
-That assertion is over the **bundled** interface, so an installed plugin does not
+That assertion is over the **bundled** interface, so an installed mod does not
 break it and nothing needs to change to use this. But if this pane is ever
 bundled, those two rows are the edit — and the test is right to have been there:
 re-pointing a freed chord at something else would have silently changed what a v1
@@ -269,7 +269,7 @@ telling the regions apart by `x` alone. It holds because the body is the only
 large region, and it would not survive a second identified one.
 
 The README's line — "`wheel.x`/`wheel.y` inside your rect" — reads as the pane's
-rect, which is what a plugin author will assume.
+rect, which is what a mod author will assume.
 
 The ask, as a thurbox issue (not opened): give `on_scroll` the same `id` and
 `role` an `on_click` hit carries, from the same `ClickTarget` — `Scroll` gains two
@@ -290,7 +290,7 @@ a *confident wrong answer* rather than a missing feature:
   `SessionRow.branch` — the worktree's own branch — as `DiffStore::request`'s
   `base`, so the range was `<own-branch>..HEAD`, which is empty by construction.
   Every worktree-backed session published `state = "ready"` with no files. It
-  now passes `base_branch`, which is also published to plugins so a pane can name
+  now passes `base_branch`, which is also published to mods so a pane can name
   the range it is showing.
 - **the request followed the focused pane's session surface.** A pane that shows
   a diff draws no terminal, so it could never be handed the thing it exists to

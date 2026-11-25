@@ -22,7 +22,7 @@
 --
 -- ── Why it parses a few thousand lines at a time ─────────────────────────────
 --
--- A plugin call gets 20M Lua instructions (`kernel::host::INSTRUCTION_BUDGET`)
+-- A mod call gets 20M Lua instructions (`kernel::host::INSTRUCTION_BUDGET`)
 -- and a diff is capped at 4 MiB (`kernel::diff::MAX_DIFF_BYTES`), which is on
 -- the order of 100k lines. So `advance` consumes a bounded number of lines per
 -- call and the pane draws what exists so far. Ordinary diffs finish on the

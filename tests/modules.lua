@@ -1,4 +1,4 @@
--- Exercises the pure modules of thurbox-code-review outside the plugin VM.
+-- Exercises the pure modules of thurbox-code-review outside the mod VM.
 --
 -- `lib.theme` and `lib.widgets` are the REAL bundled ones from the thurbox
 -- checkout, so measurement and truncation behave as they do in the pane; only
@@ -809,7 +809,7 @@ do
   eq("with its sha", back and back.sha, "deadbee")
 
   -- A key this pane did not write is not a target. `state` outlives a reload and
-  -- an older version of this plugin could have left anything there.
+  -- an older version of this mod could have left anything there.
   fake["target:s2"] = "not-a-target"
   eq("junk reads as the default", target.of(fake, "s2"), nil)
   fake["target:s3"] = "commit:zzz"

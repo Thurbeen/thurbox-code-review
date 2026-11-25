@@ -7,7 +7,7 @@
 -- kernel learned `border_type = "thick"`.
 --
 -- Neither exists before v2.35: the names are nil and the kernel refuses the
--- border. `plugin.toml`'s `requires_thurbox` is advisory, so the pane can still
+-- border. `mod.toml`'s `requires_thurbox` is advisory, so the pane can still
 -- be loaded there, and it must draw rather than fail. On a thurbox that has them
 -- this module IS `lib/chrome`; on one that does not, it is `lib/chrome` with
 -- the missing names filled in by the look that release's own panes have — the

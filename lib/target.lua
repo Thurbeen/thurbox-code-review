@@ -33,8 +33,8 @@
 --
 -- ── Retention, which is a real cost and is not hidden either ────────────────
 --
--- Run answers are keyed `(plugin, key)` and evicted only when the plugin goes
--- (`runs.rs::retain_plugins`). The key here names the target, because it has to:
+-- Run answers are keyed `(mod, key)` and evicted only when the mod goes
+-- (`runs.rs::retain_mods`). The key here names the target, because it has to:
 -- one key reused across targets would serve the previous commit's diff while the
 -- new one was still running, and there is no generation counter published to tell
 -- them apart. So visiting N commits retains up to N x 256 KiB for the life of the
@@ -46,7 +46,7 @@
 local M = {}
 
 --- The kernel's cap on one stream of a run's output, `kernel::runs::OUTPUT_CAP`.
---- Not raisable by a plugin; named here so the banner can be honest about which
+--- Not raisable by a mod; named here so the banner can be honest about which
 --- cap cut the body.
 M.RUN_CAP = 256 * 1024
 
@@ -442,7 +442,7 @@ end
 -- ── the entry ───────────────────────────────────────────────────────────────
 
 local function ask(key, program, session, ttl, refresh)
-  -- Every frame, as PLUGINS.md insists: `run` does nothing while the answer is
+  -- Every frame, as docs/thurbox/mods.md insists: `run` does nothing while the answer is
   -- fresh or while one is already going, so this is a map lookup rather than a
   -- process, and asking once somewhere clever is how a pane shows yesterday's
   -- answer forever.
@@ -477,7 +477,7 @@ function M.entry(session, target, kernel, refresh)
     return kernel
   end
   if not run then
-    return failed("this target is built by running git — trust the plugin in settings")
+    return failed("this target is built by running git — trust the mod in settings")
   end
 
   local id = session.id

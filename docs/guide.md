@@ -1,20 +1,20 @@
 # thurbox-code-review: the guide
 
-Everything the [README](../README.md) leaves out: what the plugin replaces, how it
+Everything the [README](../README.md) leaves out: what the mod replaces, how it
 behaves, why, and how to work on it.
 
 ## What it installs
 
-A plugin cannot add a tab to a pane it does not own, so this repository ships
-**its own agent pane**: thurbox's `ui/plugins/20_agent.lua`, vendored unchanged
-from **thurbox v2.35.2**, plus the Review tab. The review itself lives in
-`lib/`. Agent and Shell draw and take keys exactly as in thurbox's pane — the
-tests render both side by side to prove it.
+A mod cannot add a tab to a pane it does not own, so this repository ships
+**its own agent pane**: thurbox's agent pane, vendored unchanged from **thurbox
+v2.35.2**, plus the Review tab. It replaces thurbox's `ui/mods/20_agent.lua`.
+The review itself lives in `lib/`. Agent and Shell draw and take keys exactly
+as in thurbox's pane — the tests render both side by side to prove it.
 
 That has three consequences, and the install steps below deal with each:
 
 - **It replaces the bundled agent pane.** Both are named `agent` and both occupy
-  the `center` slot, and `plugin install` does not remove the bundled one.
+  the `center` slot, and `mod install` does not remove the bundled one.
 - **It cannot be combined with another agent pane fork**, such as the one
   thurbox-files ships. Two forks is the same problem as two agent panes.
 - **The `run` grant is made to the agent pane's file**, since the review is part
@@ -53,18 +53,18 @@ and without colour (`STILLS=<dir>` keeps the stills).
 
 ## Upgrading from v0.1.0, the standalone review pane
 
-v0.1.0 installed `plugins/40_review.lua`, and `plugins.toml` still names that
-file. `thurbox-cli plugin update` moves the clone to this version and then has
+v0.1.0 installed `plugins/40_review.lua`, and `mods.toml` still names that
+file. `thurbox-cli mod update` moves the clone to this version and then has
 nothing to load: it reports `updated thurbox-code-review/plugins/40_review.lua`,
-and `plugin check` shows thurbox's own `agent` and no `review`. Remove the old
+and `mod check` shows thurbox's own `agent` and no `review`. Remove the old
 entry by its file and install again:
 
 ```bash
-thurbox-cli plugin remove thurbox-code-review/plugins/40_review.lua
-thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli mod remove thurbox-code-review/plugins/40_review.lua
+thurbox-cli mod install git+https://github.com/Thurbeen/thurbox-code-review
 ```
 
-Then carry on from [install step 3](../README.md#install). Plugin state and grants belong to a file, and the file
+Then carry on from [install step 3](../README.md#install). Mod state and grants belong to a file, and the file
 is a different one now, so three things do not come across: notes written in
 v0.1.0 (which a restart would have lost anyway), the four view settings (now
 `review_*` on the agent pane, back at their defaults), and a `run` grant ([install step 6](../README.md#install)
@@ -72,21 +72,21 @@ again).
 
 ## Troubleshooting
 
-**There is no Review tab.** Run `thurbox-cli plugin check`.
+**There is no Review tab.** Run `thurbox-cli mod check`.
 
 - `agent, agent` — the bundled pane still loads. Do [install step 3](../README.md#install).
-- `agent` and `review`, or `agent` alone right after a `plugin update` — that is
+- `agent` and `review`, or `agent` alone right after a `mod update` — that is
   v0.1.0's entry. See
   [Upgrading from v0.1.0](#upgrading-from-v010-the-standalone-review-pane).
 - no `agent` at all — this pane is off. Do [install step 5](../README.md#install). A load error shows on its row
-  in the Interface tab, and in `thurbox-cli plugin list`.
-- an older thurbox — `thurbox-cli version` below 2.25.0. Upgrade thurbox.
+  in the Interface tab, and in `thurbox-cli mod list`.
+- an older thurbox — `thurbox-cli version` below 3.24.0. Upgrade thurbox.
 - `agent`, and still no Review chip — thurbox's `code_review = false` under
   `[features]` turns the tab off, the way `shell_pane = false` turns off Shell.
 
 **Two agent panes are enabled.** This happens with the bundled pane, or with
 another fork such as thurbox-files' `20_agent.lua`. Both load; the first in load
-order is drawn, and `plugin check` warns that the other `shares the "center"
+order is drawn, and `mod check` warns that the other `shares the "center"
 slot and is not the one shown by default`. In a test with each pair, this pane
 was the one drawn, and it misbehaves in the same way: `Ctrl+L` stops on the
 hidden one and brings it forward, so the strip loses its Review chip and the
@@ -94,7 +94,7 @@ ring has three stops for two visible panes. Keep one — turn the other off with
 `space` in the Interface tab. Two forks of the agent pane cannot be combined;
 their changes would have to be merged into one file.
 
-**`F7` does something else, or nothing.** Another plugin declares `f7` too. `F1`
+**`F7` does something else, or nothing.** Another mod declares `f7` too. `F1`
 opens Keybindings, which lists what every key is bound to: move to *review this
 session's changes* (or to the other binding) and press `r` to rebind it. The
 Review chip and `Ctrl+P` reach the tab whatever `F7` does.
@@ -133,7 +133,7 @@ other pane and a chord that means two different things depending on where you
 are standing is worse than one spelled differently here. Marking is `m`.
 
 `v`, `w`, `f` and the syntax switch are the **same** four settings you see in
-`Ctrl+,` → Plugins, under the agent pane as `review_side`, `review_wrap`,
+`Ctrl+,`, under the agent pane as `review_side`, `review_wrap`,
 `review_files` and `review_syntax` — the key writes the setting rather than
 shadowing it, so the modal always shows what the keys did and resetting it there
 works.
@@ -196,7 +196,7 @@ carries `review tab:`, and the table the pane returns is upstream's line for lin
 — the review's keys, settings and capability are appended after it. The file is
 vendored from the release its header names (v2.35.2 today).
 
-When a thurbox release changes `ui/plugins/20_agent.lua`, merge it three ways:
+When a thurbox release changes its agent pane, merge it three ways:
 the release the fork is vendored from is the base, the new release is theirs.
 Pull requests are squash-merged, so there is no vendor commit in `main`'s history
 for `git merge` to find, and `git merge-file` does the same merge on the one file:
@@ -204,7 +204,7 @@ for `git merge` to find, and `git merge-file` does the same merge on the one fil
 ```bash
 old=v2.35.2 new=vX.Y.Z
 git -C /path/to/thurbox show "$old:ui/plugins/20_agent.lua" > /tmp/base.lua
-git -C /path/to/thurbox show "$new:ui/plugins/20_agent.lua" > /tmp/theirs.lua
+git -C /path/to/thurbox show "$new:ui/mods/20_agent.lua" > /tmp/theirs.lua
 git merge-file -L fork -L "$old" -L "$new" plugins/20_agent.lua /tmp/base.lua /tmp/theirs.lua
 # Resolve what conflicts — the `review tab:` lines are the fork's — and let the
 # tests say whether Agent and Shell still match.
@@ -246,11 +246,11 @@ Two shapes inside the frame, which is design.md **D2**:
   that has never heard of this one;
 - the **diff body is a surface** — cells positioned by character measurement
   against the width the kernel resolved, so wrapping, horizontal scrolling and
-  colouring are decisions this plugin makes from `ctx.width`.
+  colouring are decisions this mod makes from `ctx.width`.
 
 **D3 held: the body needed no new node kind**, and side-by-side is the proof
 rather than the exception. Two columns with one selectable row spanning both are
-two run-groups and a divider inside one line of cells — the plugin owns the
+two run-groups and a divider inside one line of cells — the mod owns the
 geometry, so the arithmetic is its own. Everything here is `text`, `box` and
 `surface`. There are still four, and `tests/run.sh --render` asserts it
 mechanically.
@@ -273,7 +273,7 @@ With it on, the add/remove signal moves entirely to the **sign column and the
 row's background tint** and the foreground belongs to the code, because a line
 cannot carry two meanings in one colour. It costs about 0.75 of one instruction
 batch per frame and does not grow with the diff, since only the visible lines are
-ever lexed. Turn it off in `Ctrl+,` → Plugins.
+ever lexed. Turn it off in `Ctrl+,`.
 
 There is no syntax palette to draw on — no `syntax_keyword` — so the classes
 borrow roles that already exist, mapped exactly as v1 mapped them. The cost of
@@ -332,13 +332,13 @@ trimmed it — in the markdown v1 sent:
 ```
 
 **Notes are lost when thurbox quits.** They survive an `F10` reload and not a
-restart, because `state` — the plugin store — is an in-memory map the kernel
+restart, because `state` — the mod store — is an in-memory map the kernel
 never writes to disk, whatever the docs used to say. The review tells you so on
 the line where you are typing, not only here.
 
 That is the sitting they are for: read a diff, note what you find, send it. The
 **sending** is not provisional — `command("send", …)` has always worked. Durable
-notes need the kernel to persist plugin state, or to publish the
+notes need the kernel to persist mod state, or to publish the
 `review_comments` table it already carries; `KERNEL-GAPS.md` §1 has both shapes,
 and the general one is the better ask. If it lands, these notes stop evaporating
 without the review changing.
@@ -385,12 +385,12 @@ can still be ticked off.
 
 ```bash
 # The Lua tests need thurbox's `ui/` at the tag CI pins. A checkout works, or
-# just the tree: git -C <thurbox> archive v2.35.2 ui thurbox.yml | tar -x -C <dir>
+# just the tree: git -C <thurbox> archive v3.24.0 ui thurbox.yml | tar -x -C <dir>
 export THURBOX_REPO=/path/to/thurbox
 
 selene .                      # the sandbox contract, statically
 stylua --check .
-thurbox-cli plugin check      # loads the interface the way thurbox does
+thurbox-cli mod check         # loads the interface the way thurbox does
 tests/run.sh                  # the pure modules, under a real Lua
 tests/run.sh --render         # the review's node tree, and the agent pane's tabs
 tests/run.sh --measure        # the cost, in the kernel's own unit
@@ -399,9 +399,10 @@ tests/render-proof.sh         # the tabs and the review, in a real thurbox
 
 `.publish.yaml` declares the same checks as the gate, and CI
 (`.github/workflows/ci.yml`) runs them against the pinned thurbox tag, plus
-`plugin check` on a real install made with that release's `thurbox-cli` — with
+`mod check` on a real install made with that release's `thurbox-cli` — with
 the bundled agent pane deleted as install step 3 says, asserting one `agent` and no
-warning. The vendored `thurbox.yml` must match the tag's; CI says so when it
+warning beyond the `on_click` one `mod check` gives every installed pane that
+has a click handler. The vendored `thurbox.yml` must match the tag's; CI says so when it
 drifts.
 
 `tests/render-proof.sh` runs against a release as well as a checkout: extract
@@ -419,7 +420,7 @@ asciinema 3.2.1 and agg 1.9.0.
 
 Three layers, because each catches what the one below cannot:
 
-- **`plugin check`** loads the interface but never calls `render`, so it cannot
+- **`mod check`** loads the interface but never calls `render`, so it cannot
   tell a pane that draws from a pane that throws.
 - **`tests/run.sh --render`** calls `render` against a faked snapshot and asserts
   on the node tree — including, mechanically, that every node kind is one of the
@@ -444,5 +445,5 @@ decisions.
 
 Both scripts write only under `$XDG_CACHE_HOME` and a temp directory; nothing
 generated lands in this working copy, because a dirty tree is what makes
-`plugin update` refuse to move. That is also why there is no `.gitignore`: there
+`mod update` refuse to move. That is also why there is no `.gitignore`: there
 is nothing this repository generates for one to cover.
